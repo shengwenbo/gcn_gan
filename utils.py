@@ -12,13 +12,20 @@ def encode_onehot(labels):
     return labels_onehot
 
 
+def encode_index(labels):
+    classes = set(labels)
+    classes_dict = {c: i for i, c in enumerate(classes)}
+    labels_index = np.array(list(map(classes_dict.get, labels)), dtype=np.int32)
+    return labels_index
+
+
 def load_data(path="data/cora/", dataset="cora"):
     """Load citation network dataset (cora only for now)"""
     print('Loading {} dataset...'.format(dataset))
 
     idx_features_labels = np.genfromtxt("{}{}.content".format(path, dataset), dtype=np.dtype(str))
     features = sp.csr_matrix(idx_features_labels[:, 1:-1], dtype=np.float32)
-    labels = encode_onehot(idx_features_labels[:, -1])
+    labels = encode_index(idx_features_labels[:, -1])
 
     # build graph
     idx = np.array(idx_features_labels[:, 0], dtype=np.int32)

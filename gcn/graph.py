@@ -32,7 +32,7 @@ class GraphConvolution(Layer):
         self.activity_regularizer = regularizers.get(activity_regularizer)
         self.kernel_constraint = constraints.get(kernel_constraint)
         self.bias_constraint = constraints.get(bias_constraint)
-        self.supports_masking = True
+        self.supports_masking = False
 
         self.support = support
         assert support >= 1

@@ -1,26 +1,37 @@
 from __future__ import print_function, division
 
 from keras.datasets import mnist
-from keras.layers import Input, Dense, Reshape, Flatten, Dropout, multiply
+from keras.layers import Input, Dense, Reshape, Flatten, Dropout, multiply, concatenate, subtract, add, dot, Lambda
 from keras.layers import BatchNormalization, Activation, Embedding, ZeroPadding2D
 from keras.layers.advanced_activations import LeakyReLU
 from keras.layers.convolutional import UpSampling2D, Conv2D
 from keras.models import Sequential, Model
 from keras.optimizers import Adam
+from keras.regularizers import l2
+from keras import backend as K
+
+from tensorflow import boolean_mask
 
 import matplotlib.pyplot as plt
 
 import numpy as np
 
+from gcn.graph import GraphConvolution
+
+from utils import *
+
 class ACGAN():
-    def __init__(self):
+    def __init__(self, feature_shape, num_classes):
         # Input shape
         self.img_rows = 28
         self.img_cols = 28
         self.channels = 1
         self.img_shape = (self.img_rows, self.img_cols, self.channels)
-        self.num_classes = 10
         self.latent_dim = 100
+
+        self.feature_dim = feature_shape[1]
+        self.num_nodes = feature_shape[0]
+        self.num_classes = num_classes
 
         optimizer = Adam(0.0002, 0.5)
         losses = ['binary_crossentropy', 'sparse_categorical_crossentropy']
@@ -32,99 +43,108 @@ class ACGAN():
             metrics=['accuracy'])
 
         # Build the generator
-        self.generator = self.build_generator()
+        self.generator = self.build_generator_merge()
 
         # The generator takes noise and the target label as input
         # and generates the corresponding digit of that label
-        noise = Input(shape=(self.latent_dim,))
-        label = Input(shape=(1,))
-        img = self.generator([noise, label])
+        G = Input(shape=(None, None), batch_shape=(None, None), sparse=True)
+
+        X_in = Input(shape=(self.feature_dim,))
+
+        Mask = Input(shape=(self.feature_dim, ))
+
+        Noise = Input(shape=(self.latent_dim,))
+        Label = Input(shape=(1,))
+        Node = self.generator([Noise, Label, Mask, X_in, G])
 
         # For the combined model we will only train the generator
         self.discriminator.trainable = False
 
         # The discriminator takes generated image as input and determines validity
         # and the label of that image
-        valid, target_label = self.discriminator(img)
+        valid, target_label = self.discriminator([Node, G])
 
         # The combined model  (stacked generator and discriminator)
         # Trains the generator to fool the discriminator
-        self.combined = Model([noise, label], [valid, target_label])
+        self.combined = Model([Noise, Label, Mask, X_in, G], [valid, target_label])
         self.combined.compile(loss=losses,
             optimizer=optimizer)
 
-    def build_generator(self):
+    def build_generator_merge(self):
+        """
+        directly concat label info to feature info
+        :return:
+        """
+        G = Input(shape=(None, None), batch_shape=(None, None), sparse=True)
 
-        model = Sequential()
+        X_in = Input(shape=(self.feature_dim,))
 
-        model.add(Dense(128 * 7 * 7, activation="relu", input_dim=self.latent_dim))
-        model.add(Reshape((7, 7, 128)))
-        model.add(BatchNormalization(momentum=0.8))
-        model.add(UpSampling2D())
-        model.add(Conv2D(128, kernel_size=3, padding="same"))
-        model.add(Activation("relu"))
-        model.add(BatchNormalization(momentum=0.8))
-        model.add(UpSampling2D())
-        model.add(Conv2D(64, kernel_size=3, padding="same"))
-        model.add(Activation("relu"))
-        model.add(BatchNormalization(momentum=0.8))
-        model.add(Conv2D(self.channels, kernel_size=3, padding='same'))
-        model.add(Activation("tanh"))
+        Mask = Input(shape=(self.feature_dim, ))
 
+        Noise = Input(shape=(self.latent_dim,))
+        Label = Input(shape=(1,))
+        Label_embedding = Flatten()(Embedding(self.num_classes, self.latent_dim)(Label))
+        Label_in = multiply([Noise, Label_embedding])
+
+        X_expand = concatenate([X_in, Label_in])
+
+        # GCN model.
+        #
+        H_gcn = Dropout(0.5)(X_expand)
+        H_gcn = GraphConvolution(16, 1, activation='relu', kernel_regularizer=l2(5e-4))([H_gcn]+[G])
+        H_gcn = Dropout(0.5)(H_gcn)
+        Y_gcn = GraphConvolution(self.feature_dim, 1, activation='softmax')([H_gcn]+[G])
+
+        #
+        Mask_reverse = Lambda(lambda x : K.ones_like(x) - x)(Mask)
+        X_origin = multiply([X_in, Mask_reverse])
+        X_gen = multiply([Y_gcn, Mask])
+
+        Y = add([X_origin, X_gen])
+
+        # Compile model
+        model = Model(inputs=[Noise, Label, Mask, X_in, G], outputs=Y)
         model.summary()
 
-        noise = Input(shape=(self.latent_dim,))
-        label = Input(shape=(1,), dtype='int32')
-        label_embedding = Flatten()(Embedding(self.num_classes, 100)(label))
-
-        model_input = multiply([noise, label_embedding])
-        img = model(model_input)
-
-        return Model([noise, label], img)
+        return model
 
     def build_discriminator(self):
 
-        model = Sequential()
+        G = Input(shape=(None, None), batch_shape=(None, None), sparse=True)
+        X_in = Input(shape=(self.feature_dim, ))
 
-        model.add(Conv2D(16, kernel_size=3, strides=2, input_shape=self.img_shape, padding="same"))
-        model.add(LeakyReLU(alpha=0.2))
-        model.add(Dropout(0.25))
-        model.add(Conv2D(32, kernel_size=3, strides=2, padding="same"))
-        model.add(ZeroPadding2D(padding=((0,1),(0,1))))
-        model.add(LeakyReLU(alpha=0.2))
-        model.add(Dropout(0.25))
-        model.add(BatchNormalization(momentum=0.8))
-        model.add(Conv2D(64, kernel_size=3, strides=2, padding="same"))
-        model.add(LeakyReLU(alpha=0.2))
-        model.add(Dropout(0.25))
-        model.add(BatchNormalization(momentum=0.8))
-        model.add(Conv2D(128, kernel_size=3, strides=1, padding="same"))
-        model.add(LeakyReLU(alpha=0.2))
-        model.add(Dropout(0.25))
+        # GCN model.
+        #
+        H_gcn = Dropout(0.5)(X_in)
+        H_gcn = GraphConvolution(16, 1, activation='relu', kernel_regularizer=l2(5e-4))([H_gcn, G])
+        H_gcn = Dropout(0.5)(H_gcn)
+        Y_gcn = GraphConvolution(self.feature_dim, 1, activation='softmax')([H_gcn, G])
 
-        model.add(Flatten())
-        model.summary()
-
-        img = Input(shape=self.img_shape)
-
-        # Extract feature representation
-        features = model(img)
+        features = Y_gcn
 
         # Determine validity and label of the image
         validity = Dense(1, activation="sigmoid")(features)
         label = Dense(self.num_classes+1, activation="softmax")(features)
 
-        return Model(img, [validity, label])
+        model = Model([X_in, G], [validity, label])
+        model.summary()
+
+        return model
 
     def train(self, epochs, batch_size=128, sample_interval=50):
 
-        # Load the dataset
-        (X_train, y_train), (_, _) = mnist.load_data()
+        # Get data
+        X, A, y = load_data(path="../../data/cora/", dataset="cora")
+        y_train, y_val, y_test, idx_train, idx_val, idx_test, train_mask = get_splits(y)
 
-        # Configure inputs
-        X_train = (X_train.astype(np.float32) - 127.5) / 127.5
-        X_train = np.expand_dims(X_train, axis=3)
-        y_train = y_train.reshape(-1, 1)
+        # Normalize X
+        X /= X.sum(1).reshape(-1, 1)
+
+        # filter
+        print('Using local pooling filters...')
+        A_ = preprocess_adj(A, True)
+        support = 1
+        graph = [X, A_]
 
         # Adversarial ground truths
         valid = np.ones((batch_size, 1))
@@ -136,27 +156,48 @@ class ACGAN():
             #  Train Discriminator
             # ---------------------
 
-            # Select a random batch of images
-            idx = np.random.randint(0, X_train.shape[0], batch_size)
-            imgs = X_train[idx]
+            # Select a random batch of nodes
+            idx = np.random.choice(idx_train, batch_size)
+            gen_mask = np.zeros((self.num_nodes, self.feature_dim))
+            gen_mask[idx] = np.ones(self.feature_dim)
 
             # Sample noise as generator input
-            noise = np.random.normal(0, 1, (batch_size, 100))
+            noise = np.random.normal(0, 1, size=(batch_size, self.latent_dim))
 
             # The labels of the digits that the generator tries to create an
-            # image representation of
-            sampled_labels = np.random.randint(0, 10, (batch_size, 1))
+            # node representation of
+            sampled_labels = np.random.randint(1, self.num_classes, size=(batch_size, 1))
+
+            # delete fake nodes' features in X
+            X_ = X.copy()
+            for i in idx:
+                X_[i] = np.zeros(X_.shape[1])
+
+            # replace fake nodes' labels in Y
+            y_train_ = y_train.copy()
+            for (i, l) in zip(idx, sampled_labels):
+                y_train_[i] = l
+
+            # construct noise matrix, real nodes' noise will be set to 1
+            noise_ = np.ones((X.shape[0], self.latent_dim))
+            for (i, n) in zip(idx, noise):
+                noise_[i] = n
 
             # Generate a half batch of new images
-            gen_imgs = self.generator.predict([noise, sampled_labels])
+            gen_graph = self.generator.predict([noise_, y_train_, gen_mask, X_, A_])
 
-            # Image labels. 0-9 if image is valid or 10 if it is generated (fake)
-            img_labels = y_train[idx]
-            fake_labels = 10 * np.ones(img_labels.shape)
+            # replace generated node feature into original feature matrix
+            X_ = gen_graph
+
+            # Node labels. 0-6 if image is valid or 7 if it is generated (fake)
+            node_labels = y_train
+            fake_labels = y_train
+            for i in idx:
+                fake_labels[i] = self.num_classes
 
             # Train the discriminator
-            d_loss_real = self.discriminator.train_on_batch(imgs, [valid, img_labels])
-            d_loss_fake = self.discriminator.train_on_batch(gen_imgs, [fake, fake_labels])
+            d_loss_real = self.discriminator.train_on_batch([X, A_], [valid, node_labels], sample_weight=gen_mask[:0])
+            d_loss_fake = self.discriminator.train_on_batch([X_, A_], [fake, fake_labels], sample_weight=gen_mask[:0])
             d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
 
             # ---------------------
@@ -208,5 +249,5 @@ class ACGAN():
 
 
 if __name__ == '__main__':
-    acgan = ACGAN()
-    acgan.train(epochs=14000, batch_size=32, sample_interval=200)
+    acgan = ACGAN((2708, 1433), 7)
+    acgan.train(epochs=14000, batch_size=10, sample_interval=200)
