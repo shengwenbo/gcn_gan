@@ -20,6 +20,8 @@ from gcn.graph import GraphConvolution
 
 from utils import *
 
+import os
+
 class ACGAN():
     def __init__(self, feature_shape, num_classes):
         # Input shape
@@ -33,7 +35,7 @@ class ACGAN():
         self.num_nodes = feature_shape[0]
         self.num_classes = num_classes
 
-        optimizer = Adam(0.0002, 0.5)
+        optimizer = Adam(0.01, 0.5)
         losses = ['binary_crossentropy', 'sparse_categorical_crossentropy']
 
         # Build and compile the discriminator
@@ -70,6 +72,12 @@ class ACGAN():
         self.combined.compile(loss=losses,
             optimizer=optimizer)
 
+        # load saved model
+        if(os.listdir("saved_model")):
+            print("Loading weights from saved_model/")
+            self.generator.load_weights("saved_model/generator_weights.hdf5")
+            self.discriminator.load_weights("saved_model/discriminator_weights.hdf5")
+
     def build_generator_merge(self):
         """
         directly concat label info to feature info
@@ -91,7 +99,8 @@ class ACGAN():
         # GCN model.
         #
         H_gcn = Dropout(0.5)(X_expand)
-        H_gcn = GraphConvolution(16, 1, activation='relu', kernel_regularizer=l2(5e-4))([H_gcn]+[G])
+        H_gcn = GraphConvolution(16, 1, kernel_regularizer=l2(5e-4))([H_gcn]+[G])
+        H_gcn = LeakyReLU()(H_gcn)
         H_gcn = Dropout(0.5)(H_gcn)
         Y_gcn = GraphConvolution(self.feature_dim, 1, activation='softmax')([H_gcn]+[G])
 
@@ -116,7 +125,8 @@ class ACGAN():
         # GCN model.
         #
         H_gcn = Dropout(0.5)(X_in)
-        H_gcn = GraphConvolution(16, 1, activation='relu', kernel_regularizer=l2(5e-4))([H_gcn, G])
+        H_gcn = GraphConvolution(16, 1, kernel_regularizer=l2(5e-4))([H_gcn, G])
+        H_gcn = LeakyReLU()(H_gcn)
         H_gcn = Dropout(0.5)(H_gcn)
         Y_gcn = GraphConvolution(self.feature_dim, 1, activation='softmax')([H_gcn, G])
 
@@ -131,7 +141,7 @@ class ACGAN():
 
         return model
 
-    def train(self, epochs, batch_size=128, sample_interval=50):
+    def train(self, epochs, batch_size=128, sample_interval=50, d_weight=3):
 
         # Get data
         X, A, y = load_data(path="../../data/cora/", dataset="cora")
@@ -147,8 +157,8 @@ class ACGAN():
         graph = [X, A_]
 
         # Adversarial ground truths
-        valid = np.ones((batch_size, 1))
-        fake = np.zeros((batch_size, 1))
+        valid = np.ones((self.num_nodes, 1))
+        fake = np.zeros((self.num_nodes, 1))
 
         for epoch in range(epochs):
 
@@ -184,7 +194,7 @@ class ACGAN():
                 noise_[i] = n
 
             # Generate a half batch of new images
-            gen_graph = self.generator.predict([noise_, y_train_, gen_mask, X_, A_])
+            gen_graph = self.generator.predict([noise_, y_train_, gen_mask, X_, A_], batch_size=X_.shape[0])
 
             # replace generated node feature into original feature matrix
             X_ = gen_graph
@@ -195,9 +205,12 @@ class ACGAN():
             for i in idx:
                 fake_labels[i] = self.num_classes
 
+            node_labels = self.make_one_hot(node_labels, self.num_classes+1)
+            fake_labels = self.make_one_hot(fake_labels, self.num_classes+1)
+
             # Train the discriminator
-            d_loss_real = self.discriminator.train_on_batch([X, A_], [valid, node_labels], sample_weight=gen_mask[:0])
-            d_loss_fake = self.discriminator.train_on_batch([X_, A_], [fake, fake_labels], sample_weight=gen_mask[:0])
+            d_loss_real = self.discriminator.train_on_batch([X, A_], [valid, node_labels], sample_weight=[gen_mask[:,0], gen_mask[:,0]])
+            d_loss_fake = self.discriminator.train_on_batch([X_, A_], [fake, fake_labels], sample_weight=[gen_mask[:,0], gen_mask[:,0]])
             d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
 
             # ---------------------
@@ -205,7 +218,8 @@ class ACGAN():
             # ---------------------
 
             # Train the generator
-            g_loss = self.combined.train_on_batch([noise, sampled_labels], [valid, sampled_labels])
+            if epoch % d_weight == 0:
+                g_loss = self.combined.train_on_batch([noise_, y_train_, gen_mask, X_, A_], [valid, fake_labels], sample_weight=gen_mask[:0])
 
             # Plot the progress
             print ("%d [D loss: %f, acc.: %.2f%%, op_acc: %.2f%%] [G loss: %f]" % (epoch, d_loss[0], 100*d_loss[3], 100*d_loss[4], g_loss[0]))
@@ -213,7 +227,9 @@ class ACGAN():
             # If at save interval => save generated image samples
             if epoch % sample_interval == 0:
                 self.save_model()
-                self.sample_images(epoch)
+
+    def make_one_hot(self, data, num_classes):
+        return (np.arange(num_classes) == data[:, None]).astype(np.integer)
 
     def sample_images(self, epoch):
         r, c = 10, 10
@@ -247,7 +263,6 @@ class ACGAN():
         save(self.generator, "generator")
         save(self.discriminator, "discriminator")
 
-
 if __name__ == '__main__':
     acgan = ACGAN((2708, 1433), 7)
-    acgan.train(epochs=14000, batch_size=10, sample_interval=200)
+    acgan.train(epochs=14000, batch_size=10, sample_interval=200, d_weight=4)
