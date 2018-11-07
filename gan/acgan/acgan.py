@@ -205,9 +205,6 @@ class ACGAN():
             for i in idx:
                 fake_labels[i] = self.num_classes
 
-            node_labels = self.make_one_hot(node_labels, self.num_classes+1)
-            fake_labels = self.make_one_hot(fake_labels, self.num_classes+1)
-
             # Train the discriminator
             d_loss_real = self.discriminator.train_on_batch([X, A_], [valid, node_labels], sample_weight=[gen_mask[:,0], gen_mask[:,0]])
             d_loss_fake = self.discriminator.train_on_batch([X_, A_], [fake, fake_labels], sample_weight=[gen_mask[:,0], gen_mask[:,0]])
@@ -227,10 +224,7 @@ class ACGAN():
             # If at save interval => save generated image samples
             if epoch % sample_interval == 0:
                 self.save_model()
-
-    def make_one_hot(self, data, num_classes):
-        return (np.arange(num_classes) == data[:, None]).astype(np.integer)
-
+                
     def sample_images(self, epoch):
         r, c = 10, 10
         noise = np.random.normal(0, 1, (r * c, 100))
