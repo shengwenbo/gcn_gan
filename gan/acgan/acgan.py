@@ -167,9 +167,11 @@ class ACGAN():
             # ---------------------
 
             # Select a random batch of nodes
-            idx = np.random.choice(idx_train, batch_size)
+            gen_idx = np.random.choice(self.num_nodes, batch_size)
             gen_mask = np.zeros((self.num_nodes, self.feature_dim))
-            gen_mask[idx] = np.ones(self.feature_dim)
+            gen_mask[gen_idx] = np.ones(self.feature_dim)
+
+            #
 
             # Sample noise as generator input
             noise = np.random.normal(0, 1, size=(batch_size, self.latent_dim))
@@ -180,17 +182,17 @@ class ACGAN():
 
             # delete fake nodes' features in X
             X_ = X.copy()
-            for i in idx:
+            for i in gen_idx:
                 X_[i] = np.zeros(X_.shape[1])
 
             # replace fake nodes' labels in Y
             y_train_ = y_train.copy()
-            for (i, l) in zip(idx, sampled_labels):
+            for (i, l) in zip(gen_idx, sampled_labels):
                 y_train_[i] = l
 
             # construct noise matrix, real nodes' noise will be set to 1
             noise_ = np.ones((X.shape[0], self.latent_dim))
-            for (i, n) in zip(idx, noise):
+            for (i, n) in zip(gen_idx, noise):
                 noise_[i] = n
 
             # Generate a half batch of new images
@@ -202,12 +204,12 @@ class ACGAN():
             # Node labels. 0-6 if image is valid or 7 if it is generated (fake)
             node_labels = y_train
             fake_labels = y_train
-            for i in idx:
+            for i in gen_idx:
                 fake_labels[i] = self.num_classes
 
             # Train the discriminator
-            d_loss_real = self.discriminator.train_on_batch([X, A_], [valid, node_labels], sample_weight=[gen_mask[:,0], gen_mask[:,0]])
-            d_loss_fake = self.discriminator.train_on_batch([X_, A_], [fake, fake_labels], sample_weight=[gen_mask[:,0], gen_mask[:,0]])
+            d_loss_real = self.discriminator.train_on_batch([X, A_], [valid, node_labels], sample_weight=[valid[:, 0], train_mask])
+            d_loss_fake = self.discriminator.train_on_batch([X_, A_], [fake, fake_labels], sample_weight=[gen_mask[:, 0], gen_mask[:, 0]])
             d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
 
             # ---------------------
@@ -224,7 +226,17 @@ class ACGAN():
             # If at save interval => save generated image samples
             if epoch % sample_interval == 0:
                 self.save_model()
-                
+                self.val(y_val, idx_val, X, A_)
+
+    def val(self, y_val, val_idx, X, G):
+        valid = np.ones((self.num_nodes,1))
+        val_mask = np.zeros(self.num_nodes)
+        val_mask[val_idx] = 1
+        d_val_loss = self.discriminator.evaluate([X, G], [valid, y_val], batch_size=self.num_nodes, sample_weight=[val_mask, val_mask])
+        # Plot the progress
+        print("Val: [D loss: %f, acc.: %.2f%%, op_acc: %.2f%%]" % (
+        d_val_loss[0], 100 * d_val_loss[3], 100 * d_val_loss[4]))
+
     def sample_images(self, epoch):
         r, c = 10, 10
         noise = np.random.normal(0, 1, (r * c, 100))
