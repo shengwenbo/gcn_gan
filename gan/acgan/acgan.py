@@ -59,16 +59,19 @@ class ACGAN():
         Label = Input(shape=(1,))
         Node = self.generator([Noise, Label, Mask, X_in, G])
 
+        Label_origin = Input(shape=(1,))
+
         # For the combined model we will only train the generator
         self.discriminator.trainable = False
 
         # The discriminator takes generated image as input and determines validity
         # and the label of that image
-        valid, target_label = self.discriminator([Node, G])
+
+        valid, target_label = self.discriminator([Node, G, Label_origin])
 
         # The combined model  (stacked generator and discriminator)
         # Trains the generator to fool the discriminator
-        self.combined = Model([Noise, Label, Mask, X_in, G], [valid, target_label])
+        self.combined = Model([Noise, Label, Label_origin, Mask, X_in, G], [valid, target_label])
         self.combined.compile(loss=losses,
             optimizer=optimizer)
 
@@ -77,6 +80,7 @@ class ACGAN():
             print("Loading weights from saved_model/")
             self.generator.load_weights("saved_model/generator_weights.hdf5")
             self.discriminator.load_weights("saved_model/discriminator_weights.hdf5")
+            print("Done.")
 
     def build_generator_merge(self):
         """
@@ -121,10 +125,14 @@ class ACGAN():
 
         G = Input(shape=(None, None), batch_shape=(None, None), sparse=True)
         X_in = Input(shape=(self.feature_dim, ))
+        Label = Input(shape=(1,))
+        Label_embedding = Flatten()(Embedding(self.num_classes, self.latent_dim)(Label))
+
+        X_expand = concatenate([X_in, Label_embedding])
 
         # GCN model.
         #
-        H_gcn = Dropout(0.5)(X_in)
+        H_gcn = Dropout(0.5)(X_expand)
         H_gcn = GraphConvolution(16, 1, kernel_regularizer=l2(5e-4))([H_gcn, G])
         H_gcn = LeakyReLU()(H_gcn)
         H_gcn = Dropout(0.5)(H_gcn)
@@ -136,7 +144,7 @@ class ACGAN():
         validity = Dense(1, activation="sigmoid")(features)
         label = Dense(self.num_classes+1, activation="softmax")(features)
 
-        model = Model([X_in, G], [validity, label])
+        model = Model([X_in, G, Label], [validity, label])
         model.summary()
 
         return model
@@ -166,12 +174,15 @@ class ACGAN():
             #  Train Discriminator
             # ---------------------
 
-            # Select a random batch of nodes
+            # Select a random batch of nodes to fake
             gen_idx = np.random.choice(self.num_nodes, batch_size)
             gen_mask = np.zeros((self.num_nodes, self.feature_dim))
             gen_mask[gen_idx] = np.ones(self.feature_dim)
 
-            #
+            # Select a random batch of nodes to be valid
+            valid_idx = np.random.choice(idx_train, batch_size)
+            valid_mask = np.zeros(self.num_nodes)
+            valid_mask[valid_idx] = 1
 
             # Sample noise as generator input
             noise = np.random.normal(0, 1, size=(batch_size, self.latent_dim))
@@ -207,9 +218,15 @@ class ACGAN():
             for i in gen_idx:
                 fake_labels[i] = self.num_classes
 
+            node_labels_filterd = node_labels.copy()
+            node_labels_filterd[valid_idx] = 0
+
+            fake_labels_filterd = fake_labels.copy()
+            fake_labels_filterd[gen_idx] = 0
+
             # Train the discriminator
-            d_loss_real = self.discriminator.train_on_batch([X, A_], [valid, node_labels], sample_weight=[valid[:, 0], train_mask])
-            d_loss_fake = self.discriminator.train_on_batch([X_, A_], [fake, fake_labels], sample_weight=[gen_mask[:, 0], gen_mask[:, 0]])
+            d_loss_real = self.discriminator.train_on_batch([X, A_, node_labels_filterd], [valid, node_labels], sample_weight=[valid_mask, valid_mask])
+            d_loss_fake = self.discriminator.train_on_batch([X_, A_, fake_labels_filterd], [fake, fake_labels], sample_weight=[gen_mask[:, 0], gen_mask[:, 0]])
             d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
 
             # ---------------------
@@ -218,21 +235,27 @@ class ACGAN():
 
             # Train the generator
             if epoch % d_weight == 0:
-                g_loss = self.combined.train_on_batch([noise_, y_train_, gen_mask, X_, A_], [valid, fake_labels], sample_weight=gen_mask[:0])
+                g_loss = self.combined.train_on_batch([noise_, y_train_, fake_labels_filterd, gen_mask, X_, A_], [valid, fake_labels], sample_weight=gen_mask[:0])
 
             # Plot the progress
             print ("%d [D loss: %f, acc.: %.2f%%, op_acc: %.2f%%] [G loss: %f]" % (epoch, d_loss[0], 100*d_loss[3], 100*d_loss[4], g_loss[0]))
+            print("\t[D loss real: %f, acc.: %.2f%%, op_acc: %.2f%%]" % (
+                d_loss_real[0], 100 * d_loss_real[3], 100 * d_loss_real[4]))
+            print("\t[D loss fake: %f, acc.: %.2f%%, op_acc: %.2f%%]" % (
+                d_loss_fake[0], 100 * d_loss_fake[3], 100 * d_loss_fake[4]))
 
             # If at save interval => save generated image samples
             if epoch % sample_interval == 0:
                 self.save_model()
-                self.val(y_val, idx_val, X, A_)
+                self.val(y_val, idx_val, X, A_, y_train)
 
-    def val(self, y_val, val_idx, X, G):
+    def val(self, y_val, val_idx, X, G, labels):
         valid = np.ones((self.num_nodes,1))
         val_mask = np.zeros(self.num_nodes)
         val_mask[val_idx] = 1
-        d_val_loss = self.discriminator.evaluate([X, G], [valid, y_val], batch_size=self.num_nodes, sample_weight=[val_mask, val_mask])
+        d_val_loss = self.discriminator.evaluate([X, G, labels], [valid, y_val], batch_size=self.num_nodes, sample_weight=[val_mask, val_mask])
+        labels_pred = self.discriminator.predict([X, G, labels], batch_size=self.num_nodes)
+        print(labels_pred)
         # Plot the progress
         print("Val: [D loss: %f, acc.: %.2f%%, op_acc: %.2f%%]" % (
         d_val_loss[0], 100 * d_val_loss[3], 100 * d_val_loss[4]))
@@ -271,4 +294,4 @@ class ACGAN():
 
 if __name__ == '__main__':
     acgan = ACGAN((2708, 1433), 7)
-    acgan.train(epochs=14000, batch_size=10, sample_interval=200, d_weight=4)
+    acgan.train(epochs=14000, batch_size=10, sample_interval=200, d_weight=8)
