@@ -59,19 +59,17 @@ class ACGAN():
         Label = Input(shape=(1,))
         Node = self.generator([Noise, Label, Mask, X_in, G])
 
-        Label_origin = Input(shape=(1,))
-
         # For the combined model we will only train the generator
         self.discriminator.trainable = False
 
         # The discriminator takes generated image as input and determines validity
         # and the label of that image
 
-        valid, target_label = self.discriminator([Node, G, Label_origin])
+        valid, target_label = self.discriminator([Node, G])
 
         # The combined model  (stacked generator and discriminator)
         # Trains the generator to fool the discriminator
-        self.combined = Model([Noise, Label, Label_origin, Mask, X_in, G], [valid, target_label])
+        self.combined = Model([Noise, Label, Mask, X_in, G], [valid, target_label])
         self.combined.compile(loss=losses,
             optimizer=optimizer)
 
@@ -125,14 +123,10 @@ class ACGAN():
 
         G = Input(shape=(None, None), batch_shape=(None, None), sparse=True)
         X_in = Input(shape=(self.feature_dim, ))
-        Label = Input(shape=(1,))
-        Label_embedding = Flatten()(Embedding(self.num_classes, self.latent_dim)(Label))
-
-        X_expand = concatenate([X_in, Label_embedding])
 
         # GCN model.
         #
-        H_gcn = Dropout(0.5)(X_expand)
+        H_gcn = Dropout(0.5)(X_in)
         H_gcn = GraphConvolution(16, 1, kernel_regularizer=l2(5e-4))([H_gcn, G])
         H_gcn = LeakyReLU()(H_gcn)
         H_gcn = Dropout(0.5)(H_gcn)
@@ -144,7 +138,7 @@ class ACGAN():
         validity = Dense(1, activation="sigmoid")(features)
         label = Dense(self.num_classes+1, activation="softmax")(features)
 
-        model = Model([X_in, G, Label], [validity, label])
+        model = Model([X_in, G], [validity, label])
         model.summary()
 
         return model
@@ -218,15 +212,9 @@ class ACGAN():
             for i in gen_idx:
                 fake_labels[i] = self.num_classes
 
-            node_labels_filterd = node_labels.copy()
-            node_labels_filterd[valid_idx] = 0
-
-            fake_labels_filterd = fake_labels.copy()
-            fake_labels_filterd[gen_idx] = 0
-
             # Train the discriminator
-            d_loss_real = self.discriminator.train_on_batch([X, A_, node_labels_filterd], [valid, node_labels], sample_weight=[valid_mask, valid_mask])
-            d_loss_fake = self.discriminator.train_on_batch([X_, A_, fake_labels_filterd], [fake, fake_labels], sample_weight=[gen_mask[:, 0], gen_mask[:, 0]])
+            d_loss_real = self.discriminator.train_on_batch([X, A_], [valid, node_labels], sample_weight=[valid_mask, valid_mask])
+            d_loss_fake = self.discriminator.train_on_batch([X_, A_], [fake, fake_labels], sample_weight=[gen_mask[:, 0], gen_mask[:, 0]])
             d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
 
             # ---------------------
@@ -235,7 +223,7 @@ class ACGAN():
 
             # Train the generator
             if epoch % d_weight == 0:
-                g_loss = self.combined.train_on_batch([noise_, y_train_, fake_labels_filterd, gen_mask, X_, A_], [valid, y_train_], sample_weight=gen_mask[:0])
+                g_loss = self.combined.train_on_batch([noise_, y_train_, gen_mask, X_, A_], [valid, y_train_], sample_weight=gen_mask[:0])
 
             # Plot the progress
             print ("%d [D loss: %f, acc.: %.2f%%, op_acc: %.2f%%] [G loss: %f]" % (epoch, d_loss[0], 100*d_loss[3], 100*d_loss[4], g_loss[0]))
@@ -247,13 +235,13 @@ class ACGAN():
             # If at save interval => save generated image samples
             if epoch % sample_interval == 0:
                 # self.save_model()
-                self.val(y_val, idx_val, X, A_, y_train)
+                self.val(y_val, idx_val, X, A_)
 
-    def val(self, y_val, val_idx, X, G, labels):
+    def val(self, y_val, val_idx, X, G):
         valid = np.ones((self.num_nodes,1))
         val_mask = np.zeros(self.num_nodes)
         val_mask[val_idx] = 1
-        d_val_loss = self.discriminator.evaluate([X, G, labels], [valid, y_val], batch_size=self.num_nodes, sample_weight=[val_mask, val_mask])
+        d_val_loss = self.discriminator.evaluate([X, G], [valid, y_val], batch_size=self.num_nodes, sample_weight=[val_mask, val_mask])
         # labels_pred = self.discriminator.predict([X, G, labels], batch_size=self.num_nodes)
         # print(labels_pred)
         # Plot the progress
