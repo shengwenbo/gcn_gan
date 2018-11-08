@@ -235,7 +235,7 @@ class ACGAN():
 
             # Train the generator
             if epoch % d_weight == 0:
-                g_loss = self.combined.train_on_batch([noise_, y_train_, fake_labels_filterd, gen_mask, X_, A_], [valid, fake_labels], sample_weight=gen_mask[:0])
+                g_loss = self.combined.train_on_batch([noise_, y_train_, fake_labels_filterd, gen_mask, X_, A_], [valid, y_train_], sample_weight=gen_mask[:0])
 
             # Plot the progress
             print ("%d [D loss: %f, acc.: %.2f%%, op_acc: %.2f%%] [G loss: %f]" % (epoch, d_loss[0], 100*d_loss[3], 100*d_loss[4], g_loss[0]))
@@ -246,7 +246,7 @@ class ACGAN():
 
             # If at save interval => save generated image samples
             if epoch % sample_interval == 0:
-                self.save_model()
+                # self.save_model()
                 self.val(y_val, idx_val, X, A_, y_train)
 
     def val(self, y_val, val_idx, X, G, labels):
@@ -254,8 +254,8 @@ class ACGAN():
         val_mask = np.zeros(self.num_nodes)
         val_mask[val_idx] = 1
         d_val_loss = self.discriminator.evaluate([X, G, labels], [valid, y_val], batch_size=self.num_nodes, sample_weight=[val_mask, val_mask])
-        labels_pred = self.discriminator.predict([X, G, labels], batch_size=self.num_nodes)
-        print(labels_pred)
+        # labels_pred = self.discriminator.predict([X, G, labels], batch_size=self.num_nodes)
+        # print(labels_pred)
         # Plot the progress
         print("Val: [D loss: %f, acc.: %.2f%%, op_acc: %.2f%%]" % (
         d_val_loss[0], 100 * d_val_loss[3], 100 * d_val_loss[4]))
