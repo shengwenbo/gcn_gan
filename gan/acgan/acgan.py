@@ -191,7 +191,7 @@ class ACGAN():
                 X_[i] = np.zeros(X_.shape[1])
 
             # replace fake nodes' labels in Y
-            y_train_ = y_train.copy()
+            y_train_ = np.zeros_like(y_train)
             for (i, l) in zip(gen_idx, sampled_labels):
                 y_train_[i] = l
 
