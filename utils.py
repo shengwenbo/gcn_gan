@@ -143,3 +143,14 @@ def sparse_to_tuple(sparse_mx):
     values = sparse_mx.data
     shape = sparse_mx.shape
     return coords, values, shape
+
+def shuffle_data(X, A, y):
+    num_nodes = X.shape[0]
+    idx = list(range(num_nodes))
+    np.random.shuffle(idx)
+    X_ = X[idx]
+    A_ = A[idx, :]
+    A_ = A_[:, idx]
+    y_ = y[idx]
+
+    return X_, A_, y

@@ -208,13 +208,13 @@ class ACGAN():
 
             # Node labels. 0-6 if image is valid or 7 if it is generated (fake)
             node_labels = y_train
-            fake_labels = y_train
+            fake_labels = y_train.copy()
             for i in gen_idx:
                 fake_labels[i] = self.num_classes
 
             # Train the discriminator
-            d_loss_real = self.discriminator.train_on_batch([X, A_], [valid, node_labels], sample_weight=[valid_mask, valid_mask])
-            d_loss_fake = self.discriminator.train_on_batch([X_, A_], [fake, fake_labels], sample_weight=[gen_mask[:, 0], gen_mask[:, 0]])
+            d_loss_real = self.discriminator.train_on_batch([X, A_], [valid, node_labels])#, sample_weight=[valid_mask, valid_mask])
+            d_loss_fake = self.discriminator.train_on_batch([X_, A_], [fake, fake_labels])#, sample_weight=[gen_mask[:, 0], gen_mask[:, 0]])
             d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
 
             # ---------------------
@@ -223,7 +223,7 @@ class ACGAN():
 
             # Train the generator
             if epoch % d_weight == 0:
-                g_loss = self.combined.train_on_batch([noise_, y_train_, gen_mask, X_, A_], [valid, y_train_], sample_weight=gen_mask[:0])
+                g_loss = self.combined.train_on_batch([noise_, y_train_, gen_mask, X_, A_], [valid, y_train_])#, sample_weight=gen_mask[:0])
 
             # Plot the progress
             print ("%d [D loss: %f, acc.: %.2f%%, op_acc: %.2f%%] [G loss: %f]" % (epoch, d_loss[0], 100*d_loss[3], 100*d_loss[4], g_loss[0]))
@@ -241,7 +241,7 @@ class ACGAN():
         valid = np.ones((self.num_nodes,1))
         val_mask = np.zeros(self.num_nodes)
         val_mask[val_idx] = 1
-        d_val_loss = self.discriminator.evaluate([X, G], [valid, y_val], batch_size=self.num_nodes, sample_weight=[val_mask, val_mask])
+        d_val_loss = self.discriminator.evaluate([X, G], [valid, y_val], batch_size=self.num_nodes)#, sample_weight=[val_mask, val_mask])
         # labels_pred = self.discriminator.predict([X, G, labels], batch_size=self.num_nodes)
         # print(labels_pred)
         # Plot the progress
@@ -282,4 +282,4 @@ class ACGAN():
 
 if __name__ == '__main__':
     acgan = ACGAN((2708, 1433), 7)
-    acgan.train(epochs=14000, batch_size=10, sample_interval=200, d_weight=8)
+    acgan.train(epochs=14000, batch_size=64, sample_interval=200, d_weight=4)
