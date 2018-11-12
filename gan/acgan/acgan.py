@@ -10,6 +10,8 @@ from keras.optimizers import Adam
 from keras.regularizers import l2
 from keras import backend as K
 
+from scipy.sparse import csr_matrix
+
 from tensorflow import boolean_mask
 
 import matplotlib.pyplot as plt
@@ -35,7 +37,7 @@ class ACGAN():
         self.num_nodes = feature_shape[0]
         self.num_classes = num_classes
 
-        optimizer = Adam(0.01, 0.5)
+        optimizer = Adam(0.001, 0.5)
         losses = ['binary_crossentropy', 'sparse_categorical_crossentropy']
 
         # Build and compile the discriminator
@@ -50,14 +52,9 @@ class ACGAN():
         # The generator takes noise and the target label as input
         # and generates the corresponding digit of that label
         G = Input(shape=(None, None), batch_shape=(None, None), sparse=True)
-
-        X_in = Input(shape=(self.feature_dim,))
-
-        Mask = Input(shape=(self.feature_dim, ))
-
         Noise = Input(shape=(self.latent_dim,))
         Label = Input(shape=(1,))
-        Node = self.generator([Noise, Label, Mask, X_in, G])
+        Node = self.generator([Noise, Label, G])
 
         # For the combined model we will only train the generator
         self.discriminator.trainable = False
@@ -69,7 +66,7 @@ class ACGAN():
 
         # The combined model  (stacked generator and discriminator)
         # Trains the generator to fool the discriminator
-        self.combined = Model([Noise, Label, Mask, X_in, G], [valid, target_label])
+        self.combined = Model([Noise, Label, G], [valid, target_label])
         self.combined.compile(loss=losses,
             optimizer=optimizer)
 
@@ -86,35 +83,21 @@ class ACGAN():
         :return:
         """
         G = Input(shape=(None, None), batch_shape=(None, None), sparse=True)
-
-        X_in = Input(shape=(self.feature_dim,))
-
-        Mask = Input(shape=(self.feature_dim, ))
-
         Noise = Input(shape=(self.latent_dim,))
         Label = Input(shape=(1,))
         Label_embedding = Flatten()(Embedding(self.num_classes, self.latent_dim)(Label))
         Label_in = multiply([Noise, Label_embedding])
 
-        X_expand = concatenate([X_in, Label_in])
-
         # GCN model.
         #
-        H_gcn = Dropout(0.5)(X_expand)
+        H_gcn = Dropout(0.5)(Label_in)
         H_gcn = GraphConvolution(16, 1, kernel_regularizer=l2(5e-4))([H_gcn]+[G])
         H_gcn = LeakyReLU()(H_gcn)
         H_gcn = Dropout(0.5)(H_gcn)
         Y_gcn = GraphConvolution(self.feature_dim, 1, activation='softmax')([H_gcn]+[G])
 
-        #
-        Mask_reverse = Lambda(lambda x : K.ones_like(x) - x)(Mask)
-        X_origin = multiply([X_in, Mask_reverse])
-        X_gen = multiply([Y_gcn, Mask])
-
-        Y = add([X_origin, X_gen])
-
         # Compile model
-        model = Model(inputs=[Noise, Label, Mask, X_in, G], outputs=Y)
+        model = Model(inputs=[Noise, Label, G], outputs=Y_gcn)
         model.summary()
 
         return model
@@ -156,11 +139,7 @@ class ACGAN():
         print('Using local pooling filters...')
         A_ = preprocess_adj(A, True)
         support = 1
-        graph = [X, A_]
-
-        # Adversarial ground truths
-        valid = np.ones((self.num_nodes, 1))
-        fake = np.zeros((self.num_nodes, 1))
+        graph = [X, A]
 
         for epoch in range(epochs):
 
@@ -168,15 +147,15 @@ class ACGAN():
             #  Train Discriminator
             # ---------------------
 
-            # Select a random batch of nodes to fake
-            gen_idx = np.random.choice(self.num_nodes, batch_size)
-            gen_mask = np.zeros((self.num_nodes, self.feature_dim))
-            gen_mask[gen_idx] = np.ones(self.feature_dim)
+            X_sample, A_sample, idx_real = self.sample_sub_graph(X, A, batch_size, idx_train)
+            _, A_sample_gen, idx_gen = self.sample_sub_graph(X, A, batch_size)
 
-            # Select a random batch of nodes to be valid
-            valid_idx = np.random.choice(idx_train, batch_size)
-            valid_mask = np.zeros(self.num_nodes)
-            valid_mask[valid_idx] = 1
+            A_sample = preprocess_adj(A_sample, True)
+            A_sample_gen = preprocess_adj(A_sample_gen, True)
+
+            # Adversarial ground truths
+            valid = np.ones((batch_size, 1))
+            fake = np.zeros((batch_size, 1))
 
             # Sample noise as generator input
             noise = np.random.normal(0, 1, size=(batch_size, self.latent_dim))
@@ -185,36 +164,16 @@ class ACGAN():
             # node representation of
             sampled_labels = np.random.randint(1, self.num_classes, size=(batch_size, 1))
 
-            # delete fake nodes' features in X
-            X_ = X.copy()
-            for i in gen_idx:
-                X_[i] = np.zeros(X_.shape[1])
-
-            # replace fake nodes' labels in Y
-            y_train_ = np.zeros_like(y_train)
-            for (i, l) in zip(gen_idx, sampled_labels):
-                y_train_[i] = l
-
-            # construct noise matrix, real nodes' noise will be set to 1
-            noise_ = np.ones((X.shape[0], self.latent_dim))
-            for (i, n) in zip(gen_idx, noise):
-                noise_[i] = n
-
             # Generate a half batch of new images
-            gen_graph = self.generator.predict([noise_, y_train_, gen_mask, X_, A_], batch_size=X_.shape[0])
-
-            # replace generated node feature into original feature matrix
-            X_ = gen_graph
+            gen_graph = self.generator.predict([noise, sampled_labels, A_sample_gen], batch_size=batch_size)
 
             # Node labels. 0-6 if image is valid or 7 if it is generated (fake)
-            node_labels = y_train
-            fake_labels = y_train.copy()
-            for i in gen_idx:
-                fake_labels[i] = self.num_classes
+            node_labels = y_train[idx_real]
+            fake_labels = np.repeat(self.num_classes, batch_size)
 
             # Train the discriminator
-            d_loss_real = self.discriminator.train_on_batch([X, A_], [valid, node_labels])#, sample_weight=[valid_mask, valid_mask])
-            d_loss_fake = self.discriminator.train_on_batch([X_, A_], [fake, fake_labels])#, sample_weight=[gen_mask[:, 0], gen_mask[:, 0]])
+            d_loss_real = self.discriminator.train_on_batch([X_sample, A_sample], [valid, node_labels])#, sample_weight=[valid_mask, valid_mask])
+            d_loss_fake = self.discriminator.train_on_batch([gen_graph, A_sample_gen], [fake, fake_labels])#, sample_weight=[gen_mask[:, 0], gen_mask[:, 0]])
             d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
 
             # ---------------------
@@ -223,7 +182,7 @@ class ACGAN():
 
             # Train the generator
             if epoch % d_weight == 0:
-                g_loss = self.combined.train_on_batch([noise_, y_train_, gen_mask, X_, A_], [valid, y_train_])#, sample_weight=gen_mask[:0])
+                g_loss = self.combined.train_on_batch([noise, sampled_labels, A_sample_gen], [valid, sampled_labels])#, sample_weight=gen_mask[:0])
 
             # Plot the progress
             print ("%d [D loss: %f, acc.: %.2f%%, op_acc: %.2f%%] [G loss: %f]" % (epoch, d_loss[0], 100*d_loss[3], 100*d_loss[4], g_loss[0]))
@@ -235,18 +194,65 @@ class ACGAN():
             # If at save interval => save generated image samples
             if epoch % sample_interval == 0:
                 # self.save_model()
-                self.val(y_val, idx_val, X, A_)
+                self.val(y_val, idx_val, X, A_, batch_size)
+                self.save_model()
 
-    def val(self, y_val, val_idx, X, G):
-        valid = np.ones((self.num_nodes,1))
-        val_mask = np.zeros(self.num_nodes)
-        val_mask[val_idx] = 1
-        d_val_loss = self.discriminator.evaluate([X, G], [valid, y_val], batch_size=self.num_nodes)#, sample_weight=[val_mask, val_mask])
-        # labels_pred = self.discriminator.predict([X, G, labels], batch_size=self.num_nodes)
-        # print(labels_pred)
-        # Plot the progress
-        print("Val: [D loss: %f, acc.: %.2f%%, op_acc: %.2f%%]" % (
-        d_val_loss[0], 100 * d_val_loss[3], 100 * d_val_loss[4]))
+    def sample_sub_graph(self, X, A, num_samles, from_idx=None):
+        if from_idx:
+            center_node_id = np.random.choice(from_idx, 1)[0]
+        else:
+            center_node_id = np.random.randint(0,X.shape[0],1)[0]
+        return self.sample_sub_graph_with_center(X, A, num_samles, center_node_id, from_idx)
+
+    def sample_sub_graph_with_center(self, X, A, num_samples, center_node_id, from_idx=None):
+        A_dense = A.todense()
+        X_ = np.zeros(shape=(num_samples, X.shape[1]))
+        A_ = np.zeros(shape=(num_samples, num_samples))
+
+        node_ids = self._sample_sub_graph_id(A_dense, num_samples, center_node_id, from_idx)
+
+        for i in range(num_samples):
+            if node_ids[i] < 0:
+                break
+            X_[i] = X[node_ids[i]]
+            for j in range(num_samples):
+                if node_ids[j] <0:
+                    break
+                A_[i][j] = A_dense[node_ids[i], node_ids[j]]
+
+        return X_, csr_matrix(A_), node_ids
+
+    def _sample_sub_graph_id(self, A, num_samples, center_node_id, from_idx=None):
+        node_ids = [center_node_id]
+        if from_idx:
+            tags = np.ones(A.shape[0])
+            tags[from_idx] = 0
+        else:
+            tags = np.zeros(A.shape[0])
+        tags[center_node_id] = 1
+
+        count = 1
+        for id_base in node_ids:
+            for id_next in range(A.shape[0]):
+                if A[id_base, id_next] > 0 and tags[id_next] < 0.5:
+                    node_ids.append(id_next)
+                    tags[id_next] = 1
+                    count += 1
+                    if count == num_samples:
+                        return node_ids
+
+        [node_ids.append(-1) for i in range(count, num_samples)]
+        return node_ids
+
+    def val(self, y_val, val_idx, X, A, batch_size):
+        y_val = encode_onehot(y_val)
+        pred_classes = []
+        for idx in val_idx:
+            X_, A_, _ = self.sample_sub_graph_with_center(X, A, batch_size, idx)
+            pred_classes.append(self.discriminator.predict([X_, A_], batch_size=batch_size)[1][0])
+        pred_classes = np.array(pred_classes)
+        loss, acc = evaluate_preds(pred_classes, y_val, val_idx)
+        print("Val: loss : %.2f,  acc : %.2f%%" % (loss, acc*100))
 
     def sample_images(self, epoch):
         r, c = 10, 10
@@ -282,4 +288,4 @@ class ACGAN():
 
 if __name__ == '__main__':
     acgan = ACGAN((2708, 1433), 7)
-    acgan.train(epochs=14000, batch_size=64, sample_interval=200, d_weight=4)
+    acgan.train(epochs=14001, batch_size=16, sample_interval=200, d_weight=4)

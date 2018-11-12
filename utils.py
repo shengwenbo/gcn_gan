@@ -88,14 +88,10 @@ def accuracy(preds, labels):
     return np.mean(np.equal(np.argmax(labels, 1), np.argmax(preds, 1)))
 
 
-def evaluate_preds(preds, labels, indices):
+def evaluate_preds(preds, labels, idx):
 
-    split_loss = list()
-    split_acc = list()
-
-    for y_split, idx_split in zip(labels, indices):
-        split_loss.append(categorical_crossentropy(preds[idx_split], y_split[idx_split]))
-        split_acc.append(accuracy(preds[idx_split], y_split[idx_split]))
+    split_loss = categorical_crossentropy(preds, labels[idx])
+    split_acc = accuracy(preds, labels[idx])
 
     return split_loss, split_acc
 
