@@ -54,7 +54,13 @@ class ACGAN():
         G = Input(shape=(None, None), batch_shape=(None, None), sparse=True)
         Noise = Input(shape=(self.latent_dim,))
         Label = Input(shape=(1,))
-        Node = self.generator([Noise, Label, G])
+        Feature = Input(shape=(self.feature_dim,))
+        Gen_adj = self.generator([Noise, Label, G, Feature])
+
+        # generate new Graph
+        G_ = concatenate([G, Gen_adj], axis=0)
+        Gen_adj_ = concatenate([Gen_adj, np.ones(shape=(1,1))], axis=1)
+        G_ = concatenate([G, Gen_adj], axis=1)
 
         # For the combined model we will only train the generator
         self.discriminator.trainable = False
@@ -87,17 +93,20 @@ class ACGAN():
         Label = Input(shape=(1,))
         Label_embedding = Flatten()(Embedding(self.num_classes, self.latent_dim)(Label))
         Label_in = multiply([Noise, Label_embedding])
+        Feature = Input(shape=(self.feature_dim,))
+
+        X_in = concatenate(Feature, Label_in)
 
         # GCN model.
         #
-        H_gcn = Dropout(0.5)(Label_in)
+        H_gcn = Dropout(0.5)(X_in)
         H_gcn = GraphConvolution(16, 1, kernel_regularizer=l2(5e-4))([H_gcn]+[G])
         H_gcn = LeakyReLU()(H_gcn)
         H_gcn = Dropout(0.5)(H_gcn)
-        Y_gcn = GraphConvolution(self.feature_dim, 1, activation='softmax')([H_gcn]+[G])
+        Y_gcn = GraphConvolution(1, 1, activation='softmax')([H_gcn]+[G])
 
         # Compile model
-        model = Model(inputs=[Noise, Label, G], outputs=Y_gcn)
+        model = Model(inputs=[Noise, Label, G, Feature], outputs=Y_gcn)
         model.summary()
 
         return model
