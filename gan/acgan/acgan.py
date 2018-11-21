@@ -51,16 +51,18 @@ class ACGAN():
 
         # The generator takes noise and the target label as input
         # and generates the corresponding digit of that label
-        G = Input(shape=(None, None), batch_shape=(None, None), sparse=True)
         Noise = Input(shape=(self.latent_dim,))
-        Label = Input(shape=(1,))
         Feature = Input(shape=(self.feature_dim,))
-        Gen_adj = self.generator([Noise, Label, G, Feature])
+        Label = Input(shape=(1,))
+
+        G = Input(shape=(self.num_nodes, self.num_nodes, ), sparse=True)
+        Features = Input(shape=(self.num_nodes, self.feature_dim,))
+        Labels = Input(shape=(self.num_nodes, self.feature_dim,))
+
+        Gen_adj = self.generator([Noise, Feature, Label, G, Features, Labels])
 
         # generate new Graph
-        G_ = concatenate([G, Gen_adj], axis=0)
-        Gen_adj_ = concatenate([Gen_adj, np.ones(shape=(1,1))], axis=1)
-        G_ = concatenate([G, Gen_adj], axis=1)
+        
 
         # For the combined model we will only train the generator
         self.discriminator.trainable = False
@@ -88,25 +90,35 @@ class ACGAN():
         directly concat label info to feature info
         :return:
         """
-        G = Input(shape=(None, None), batch_shape=(None, None), sparse=True)
-        Noise = Input(shape=(self.latent_dim,))
-        Label = Input(shape=(1,))
-        Label_embedding = Flatten()(Embedding(self.num_classes, self.latent_dim)(Label))
-        Label_in = multiply([Noise, Label_embedding])
-        Feature = Input(shape=(self.feature_dim,))
+        A = Input(shape=(self.num_nodes, self.num_nodes, ), sparse=True)
+        X = Input(shape=(self.num_nodes, self.feature_dim,))
+        L = Input(shape=(self.num_nodes, 1, ))
+        L_in = concatenate([Embedding(self.num_classes, self.latent_dim)(L[:, i, 0]) for i in range(self.num_nodes)], axis=1)
 
-        X_in = concatenate(Feature, Label_in)
+        Noise = Input(shape=(self.latent_dim,))
+        Feature = Input(shape=(self.feature_dim,))
+        Label = Input(shape=(1,))
+        Label_embedding = Embedding(self.num_classes, self.latent_dim)(Label)
+        Label_in = multiply([Noise, Label_embedding])
+
+        Feature = concatenate([Feature, Label_in], axis=2)
+        X = concatenate([X, L_in], axis=2)
 
         # GCN model.
         #
-        H_gcn = Dropout(0.5)(X_in)
-        H_gcn = GraphConvolution(16, 1, kernel_regularizer=l2(5e-4))([H_gcn]+[G])
+        H_gcn = Dropout(0.5)(X)
+        H_gcn = GraphConvolution(16, 1, kernel_regularizer=l2(5e-4))([H_gcn]+[A])
         H_gcn = LeakyReLU()(H_gcn)
         H_gcn = Dropout(0.5)(H_gcn)
-        Y_gcn = GraphConvolution(1, 1, activation='softmax')([H_gcn]+[G])
+        Y_gcn = GraphConvolution(self.feature_dim+self.latent_dim, 1)([H_gcn]+[A])
+        Y_gcn = LeakyReLU()(Y_gcn)
+
+        # Predict adj
+        Y = concatenate([dot(K.squeeze(Y_gcn[:, i, :], axis=1), Feature) for i in range(self.num_nodes)], axis=1)
+        Adj = Dense(self.num_nodes, activation="tanh")(Y)
 
         # Compile model
-        model = Model(inputs=[Noise, Label, G, Feature], outputs=Y_gcn)
+        model = Model(inputs=[Noise, Feature, Label, A, X, L], outputs=Adj)
         model.summary()
 
         return model

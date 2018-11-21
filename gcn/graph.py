@@ -44,8 +44,8 @@ class GraphConvolution(Layer):
 
     def build(self, input_shapes):
         features_shape = input_shapes[0]
-        assert len(features_shape) == 2
-        input_dim = features_shape[1]
+        assert len(features_shape) == 3
+        input_dim = features_shape[-1]
 
         self.kernel = self.add_weight(shape=(input_dim * self.support,
                                              self.units),
@@ -70,7 +70,7 @@ class GraphConvolution(Layer):
         supports = list()
         for i in range(self.support):
             supports.append(K.dot(basis[i], features))
-        supports = K.concatenate(supports, axis=1)
+        supports = K.concatenate(supports, axis=2)
         output = K.dot(supports, self.kernel)
 
         if self.bias:
