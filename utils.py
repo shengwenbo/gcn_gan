@@ -4,6 +4,8 @@ import scipy.sparse as sp
 import numpy as np
 from scipy.sparse.linalg.eigen.arpack import eigsh, ArpackNoConvergence
 
+import keras.backend as K
+
 
 def encode_onehot(labels):
     classes = set(labels)
@@ -46,16 +48,16 @@ def load_data(path="data/cora/", dataset="cora"):
 
 def normalize_adj(adj, symmetric=True):
     if symmetric:
-        d = sp.diags(np.power(np.array(adj.sum(1)), -0.5).flatten(), 0)
-        a_norm = adj.dot(d).transpose().dot(d).tocsr()
+        d = np.diag(np.power(np.array(adj.sum(1)), -0.5).flatten(), 0)
+        a_norm = adj.dot(d).transpose().dot(d)
     else:
-        d = sp.diags(np.power(np.array(adj.sum(1)), -1).flatten(), 0)
-        a_norm = d.dot(adj).tocsr()
+        d = np.diag(np.power(np.array(adj.sum(1)), -1).flatten(), 0)
+        a_norm = d.dot(adj)
     return a_norm
 
 
 def preprocess_adj(adj, symmetric=True):
-    adj = adj + sp.eye(adj.shape[0])
+    adj = adj + np.eye(adj.shape[0])
     adj = normalize_adj(adj, symmetric)
     return adj
 
@@ -150,3 +152,6 @@ def shuffle_data(X, A, y):
     y_ = y[idx]
 
     return X_, A_, y
+
+def ignore_loss(y_true, y_pred):
+    return K.constant(0)

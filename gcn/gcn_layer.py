@@ -36,7 +36,7 @@ class GCNLayer(Layer):
         features_shape = input_shapes[0]
         output_shape = list(features_shape)
         output_shape[-1] = self.units
-        return output_shape  # (batch_size, num_nodes, output_dim)
+        return tuple(output_shape)  # (batch_size, num_nodes, output_dim)
 
     def build(self, input_shapes):
         features_shape = input_shapes[0]
@@ -62,7 +62,7 @@ class GCNLayer(Layer):
         adj = inputs[1]
 
         output = K.batch_dot(adj, features)
-        output = K.batch_dot(output, self.kernel)
+        output = K.dot(output, self.kernel)
 
         if self.bias:
             output += self.bias
