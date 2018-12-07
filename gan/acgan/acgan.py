@@ -1,7 +1,8 @@
 from __future__ import print_function, division
 
 from keras.datasets import mnist
-from keras.layers import Input, Dense, Reshape, Flatten, Dropout, multiply, concatenate, subtract, add, dot, Lambda
+from keras.layers import Input, Dense, Reshape, Flatten, Dropout, multiply, concatenate, subtract, add, dot, Lambda, RepeatVector
+from keras.layers.recurrent import SimpleRNN
 from keras.layers import BatchNormalization, Activation, Embedding, ZeroPadding2D
 from keras.layers.advanced_activations import LeakyReLU
 from keras.layers.convolutional import UpSampling2D, Conv2D
@@ -25,7 +26,7 @@ from utils import *
 import os
 
 class ACGAN():
-    def __init__(self, feature_dim, num_nodes, num_classes, latent_dim=100):
+    def __init__(self, feature_dim, num_nodes, num_classes, latent_dim=32):
         # Input shape
         self.latent_dim = latent_dim
 
@@ -93,18 +94,20 @@ class ACGAN():
         :return:
         """
         label = Input(shape=(1,))
-        label_embedding = Embedding(self.num_classes, self.latent_dim)(label)
+        label_embedding = Embedding(self.num_classes, self.latent_dim, input_length=1)(label)
+        label_embedding = Reshape(target_shape=(self.latent_dim,))(label_embedding)
         noise = Input(shape=(self.latent_dim,))
         label_in = multiply([label_embedding, noise])
+
+        input_feature = RepeatVector(self.num_nodes)(label_in)
 
         # generative model.
         #
         # generate features
-        features = [Dense(self.feature_dim)(label_in) for i in range(self.num_nodes)]
-        features = concatenate(features, axis=-2)
+        features = SimpleRNN(self.feature_dim, return_sequences=True)(input_feature)
         # generate adj
-        adj = [Dense(self.num_nodes)(label_in) for i in range(self.num_nodes)]
-        adj = concatenate(adj, axis=-2)
+        adj = SimpleRNN(self.num_nodes, return_sequences=True)(input_feature)
+        adj = LeakyReLU()(adj)
 
         # Compile model
         model = Model(inputs=[label, noise], outputs=[features, adj])
@@ -120,14 +123,16 @@ class ACGAN():
         # GCN model.
         #
         h_gcn = Dropout(0.5)(features)
-        h_gcn = GCNLayer(16)([h_gcn, adj])
+        h_gcn = GCNLayer(32)([h_gcn, adj])
         h_gcn = LeakyReLU()(h_gcn)
         h_gcn = Dropout(0.5)(h_gcn)
-        y_gcn = GCNLayer(self.feature_dim)([h_gcn, adj])
+        y_gcn = GCNLayer(self.latent_dim)([h_gcn, adj])
         y_gcn = LeakyReLU()(y_gcn)
 
-        y_gcn = Flatten()(y_gcn)
-        output_feature = Dense(self.latent_dim, name="graph_embedding")(y_gcn)
+        # y_gcn = Flatten()(y_gcn)
+        # output_feature = Dense(self.latent_dim, name="graph_embedding")(y_gcn)
+
+        output_feature = Lambda(lambda x: x[:, 0])(y_gcn)
 
         # Determine validity
         validity = Dense(1, activation="sigmoid")(output_feature)
