@@ -34,91 +34,21 @@ class ACGAN():
         self.num_nodes = num_nodes
         self.num_classes = num_classes
 
-        optimizer = Adam(0.001, 0.5)
+        optimizer = Adam(0.0001, 0.5)
         losses = ['binary_crossentropy', 'sparse_categorical_crossentropy']
 
-        # Build and compile the discriminator
-        self.discriminator_unlabeled = self.build_discriminator_unlabeled()
-        self.discriminator_unlabeled.compile(loss=["binary_crossentropy", ignore_loss],
+        self.discriminator_labeled = self.build_discriminator_labeled()
+        self.discriminator_labeled.compile(loss=["sparse_categorical_crossentropy"],
             optimizer=optimizer,
             metrics=['accuracy'])
-
-        self.discriminator_unlabeled.trainable = False
-        adj = Input(shape=(self.num_nodes, self.num_nodes,))
-        features = Input(shape=(self.num_nodes, self.feature_dim,))
-        graph_embedding = self.discriminator_unlabeled([features, adj])[1]
-        label = Dense(self.num_classes+1, activation="softmax")(graph_embedding)
-        self.discriminator_labeled = Model([features, adj], [label])
-        self.discriminator_labeled.summary()
-        self.discriminator_labeled.compile(loss=["sparse_categorical_crossentropy"],
-                                             optimizer=optimizer,
-                                             metrics=["accuracy"])
-
-        # Build the generator
-        self.generator = self.build_generator()
-
-        # The generator takes noise and the target label as input
-        # and generates the corresponding digit of that label
-        noise = Input(shape=(self.latent_dim,))
-        label = Input(shape=(1,))
-        features = Input(shape=(self.num_nodes,self.feature_dim,))
-
-        gen_graph = self.generator([features, label, noise])
-
-        # For the combined model we will only train the generator
-        self.discriminator_unlabeled.trainable = False
-        self.discriminator_labeled.trainable = False
-
-        # The discriminator takes generated image as input and determines validity
-        # and the label of that image
-
-        valid = self.discriminator_unlabeled([features, gen_graph])[0]
-        target_label = self.discriminator_labeled([features, gen_graph])
-
-        # The combined model  (stacked generator and discriminator)
-        # Trains the generator to fool the discriminator
-        self.combined = Model([features, label, noise], [valid, target_label])
-        self.combined.compile(loss=losses,
-            optimizer=optimizer)
 
         # load saved model
         if(os.listdir("saved_model")):
             print("Loading weights from saved_model/")
-            self.generator.load_weights("saved_model/generator_weights.hdf5")
             self.discriminator_labeled.load_weights("saved_model/discriminator_labeled_weights.hdf5")
-            self.discriminator_unlabeled.load_weights("saved_model/discriminator_unlabeled_weights.hdf5")
             print("Done.")
 
-    def build_generator(self):
-        """
-        directly concat label info to feature info
-        :return:
-        """
-        features_in = Input(shape=(self.num_nodes, self.feature_dim))
-        label = Input(shape=(1,))
-        label_embedding = Embedding(self.num_classes, self.latent_dim, input_length=1)(label)
-        label_embedding = Reshape(target_shape=(self.latent_dim,))(label_embedding)
-        noise = Input(shape=(self.latent_dim,))
-        label_in = multiply([label_embedding, noise])
-
-        label_in = RepeatVector(self.num_nodes)(label_in)
-        features = concatenate([features_in, label_in])
-
-        # generative model.
-        #
-        # generate adj
-        adj_encoder = LSTM(self.latent_dim, return_sequences=True)(features)
-        adj_encoder = LeakyReLU()(adj_encoder)
-        adj_decoder = LSTM(self.num_nodes, return_sequences=True)(adj_encoder)
-        adj = LeakyReLU()(adj_decoder)
-
-        # Compile model
-        model = Model(inputs=[features_in, label, noise], outputs=[adj])
-        model.summary()
-
-        return model
-
-    def build_discriminator_unlabeled(self):
+    def build_discriminator_labeled(self):
 
         adj = Input(shape=(self.num_nodes, self.num_nodes,))
         features = Input(shape=(self.num_nodes, self.feature_dim,))
@@ -137,22 +67,12 @@ class ACGAN():
 
         output_feature = Lambda(lambda x: x[:, 0])(y_gcn)
 
-        # Determine validity
-        validity = Dense(1, activation="sigmoid")(output_feature)
+        label = Dense(self.num_classes+1, activation="softmax")(output_feature)
 
-        model = Model([features, adj], [validity, output_feature])
+        model = Model([features, adj], [label])
         model.summary()
 
         return model
-
-    def build_discriminator_labeled(self):
-
-        feature = Input(shape=(self.latent_dim,))
-
-        label = Dense(self.num_classes+1, activation="softmax")(feature)
-
-        model = Model([feature], [label])
-        model.summary()
 
         return model
 
@@ -180,7 +100,7 @@ class ACGAN():
             A_sample_labeled = []
             idx_real_labeled = []
             for i in range(batch_size):
-                x, a, i = self.sample_sub_graph(X, A, batch_size, idx_train)
+                x, a, i = self.sample_sub_graph(X, A, self.num_nodes, idx_train)
                 a = preprocess_adj(a)
                 X_sample_labeled.append(x)
                 A_sample_labeled.append(a)
@@ -188,57 +108,17 @@ class ACGAN():
             X_sample_labeled = np.array(X_sample_labeled)
             A_sample_labeled = np.array(A_sample_labeled)
 
-            X_sample_unlabeled = []
-            A_sample_unlabeled = []
-            idx_real_unlabeled = []
-            for i in range(batch_size):
-                x, a, i = self.sample_sub_graph(X, A, batch_size, range(X.shape[0]))
-                a = preprocess_adj(a)
-                X_sample_unlabeled.append(x)
-                A_sample_unlabeled.append(a)
-                idx_real_unlabeled.append(i[0])
-            X_sample_unlabeled = np.array(X_sample_unlabeled)
-            A_sample_unlabeled = np.array(A_sample_unlabeled)
-
             # Adversarial ground truths
-            valid = np.ones((batch_size, 1))
-            fake = np.zeros((batch_size, 1))
-
-            # Sample noise as generator input
-            noise = np.random.normal(0, 1, size=(batch_size, self.latent_dim))
-
-            # The labels of the digits that the generator tries to create an
-            # node representation of
-            sampled_labels = np.random.randint(1, self.num_classes, size=(batch_size, 1))
-
-            # Generate a half batch of new images
-            gen_graphs = self.generator.predict([X_sample_unlabeled, sampled_labels, noise])
-            gen_graphs = [X_sample_unlabeled, gen_graphs]
+            valid = np.ones((self.num_nodes, 1))
 
             # Node labels. 0-6 if image is valid or 7 if it is generated (fake)
             node_labels = y_train[idx_real_labeled]
-            fake_labels = np.repeat(self.num_classes, batch_size)
 
-            # Train the discriminator
-            d_loss_real_unlabeled = self.discriminator_unlabeled.train_on_batch([X_sample_unlabeled, A_sample_unlabeled], [valid, np.zeros((batch_size,self.num_nodes,100))])
-            d_loss_fake_unlabeled = self.discriminator_unlabeled.train_on_batch(gen_graphs, [fake, np.zeros((batch_size,self.num_nodes,100))])
-            d_loss_unlabeled = 0.5 * np.add(d_loss_real_unlabeled[:-1], d_loss_fake_unlabeled[:-1])
-
-            d_loss_real_labeled = self.discriminator_labeled.train_on_batch([X_sample_labeled, A_sample_labeled], [node_labels])
-            d_loss_fake_labeled = self.discriminator_labeled.train_on_batch(gen_graphs, [fake_labels])
-            d_loss_labeled = 0.5 * np.add(d_loss_real_labeled, d_loss_fake_labeled)
-
-            # ---------------------
-            #  Train Generator
-            # ---------------------
-
-            # Train the generator
-            if epoch % d_weight == 0:
-                g_loss = self.combined.train_on_batch([X_sample_unlabeled, sampled_labels, noise], [valid, sampled_labels])
+            d_loss_labeled = self.discriminator_labeled.train_on_batch([X_sample_labeled, A_sample_labeled], [node_labels])
 
             # Plot the progress
 
-            print("{} [Unlabeled loss: {}, labeled loss: {}, generater loss: {}]".format(epoch, d_loss_unlabeled, d_loss_labeled, g_loss))
+            print("{} [loss: {}]".format(epoch,d_loss_labeled))
 
             # print ("%d [Unlabeled loss: %f, acc.: %.2f%%, op_acc: %.2f%%] [G loss: %f]" % (epoch, d_loss_unlabeled[0], 100*d_loss_unlabeled[3], 100*d_loss_unlabeled[4], g_loss[0]))
             # print("\t[Unlabeled loss real: %f, acc.: %.2f%%, op_acc: %.2f%%]" % (
@@ -255,7 +135,7 @@ class ACGAN():
             # If at save interval => save generated image samples
             if epoch % sample_interval == 0:
                 # self.save_model()
-                self.val(y_val, idx_val, X, A, batch_size)
+                self.val(y_val, idx_val, X, A, self.num_nodes)
                 self.save_model()
 
     def sample_sub_graph(self, X, A, num_samles, from_idx=None):
@@ -350,10 +230,8 @@ class ACGAN():
             open(options['file_arch'], 'w').write(json_string)
             model.save_weights(options['file_weight'])
 
-        save(self.generator, "generator")
         save(self.discriminator_labeled, "discriminator_labeled")
-        save(self.discriminator_unlabeled, "discriminator_unlabeled")
 
 if __name__ == '__main__':
     acgan = ACGAN(1433, 16, 7)
-    acgan.train(epochs=14001, batch_size=16, sample_interval=200, d_weight=4)
+    acgan.train(epochs=14001, batch_size=32, sample_interval=200, d_weight=4)
