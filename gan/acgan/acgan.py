@@ -8,10 +8,11 @@ from keras.layers import BatchNormalization, Activation, Embedding, ZeroPadding2
 from keras.layers.advanced_activations import LeakyReLU
 from keras.layers.convolutional import UpSampling2D, Conv2D
 from keras.models import Sequential, Model
-from keras.optimizers import Adam
+from keras.optimizers import Adam, RMSprop
 from keras.regularizers import l2
 from keras import backend as K
 from scipy.sparse import csr_matrix
+from keras.layers.convolutional import UpSampling2D, Conv2D
 
 from tensorflow import boolean_mask
 
@@ -29,7 +30,7 @@ import os
 MAX_DEPTH = 3
 
 class ACGAN():
-    def __init__(self, feature_dim, num_nodes, num_classes, latent_dim=32, dropout_rate=0., mlp_units=(64, 128, 256)):
+    def __init__(self, feature_dim, num_nodes, num_classes, latent_dim=32, dropout_rate=0., mlp_units=(64, 128, 256), clip_value=0.01):
         # Input shape
         self.latent_dim = latent_dim
 
@@ -38,9 +39,10 @@ class ACGAN():
         self.num_classes = num_classes
         self.dropout_rate = dropout_rate
         self.mlp_units = mlp_units
+        self.clip_value = clip_value
 
-        optimizer = Adam(0.01, 0.5)
-        losses = ['binary_crossentropy', 'sparse_categorical_crossentropy']
+        optimizer = RMSprop(0.00005)
+        losses = [self.wasserstein_loss, "sparse_categorical_crossentropy"]
 
         # Build and compile the discriminator
         self.discriminator_unlabeled = self.build_discriminator_unlabeled()
@@ -96,14 +98,16 @@ class ACGAN():
         mlp = label_in
         for u in self.mlp_units:
             mlp = Dense(u)(mlp)
-            mlp = Dropout(self.dropout_rate)(mlp)
-        mlp = BatchNormalization()(mlp)
+            mlp = BatchNormalization()(mlp)
+            mlp = Activation("relu")(mlp)
 
         # generate adj
         features = Reshape((self.num_nodes, self.feature_dim))(Dense(self.num_nodes*self.feature_dim,)(mlp))
+        features = Activation("tanh")(features)
 
         adj = Reshape((self.num_nodes, self.num_nodes))(Dense(self.num_nodes*self.num_nodes)(mlp))
         adj = Lambda(lambda x: (x+tf.matrix_transpose(x))/2)(adj)
+        adj = Activation("sigmoid")(adj)
 
         # Compile model
         model = Model(inputs=[label, noise], outputs=[features, adj])
@@ -118,6 +122,7 @@ class ACGAN():
 
         # GCN model.
         #
+
         h_gcn = Dropout(0.3)(features)
         h_gcn = GCNLayer(64)([h_gcn, adj])
         h_gcn = BatchNormalization()(h_gcn)
@@ -125,22 +130,29 @@ class ACGAN():
         y_gcn = GCNLayer(32)([h_gcn, adj])
         y_gcn = BatchNormalization()(y_gcn)
         y_gcn = LeakyReLU()(y_gcn)
-        y_gcn = GCNLayer(self.latent_dim)([h_gcn, adj])
+        y_gcn = GCNLayer(self.latent_dim)([y_gcn, adj])
+        y_gcn = BatchNormalization()(y_gcn)
         y_gcn = LeakyReLU()(y_gcn)
+        y_gcn = Dropout(0.3)(y_gcn)
 
-        # y_gcn = Flatten()(y_gcn)
-        # output_feature = Dense(self.latent_dim, name="graph_embedding")(y_gcn)
-
-        output_feature = Lambda(lambda x: x[:, 0])(y_gcn)
+        output_feature = Flatten()(y_gcn)
+        # output_feature = Lambda(lambda x: x[:, 0])(y_gcn)
 
         # Determine validity
-        validity = Dense(1, activation="sigmoid")(output_feature)
-        label = Dense(self.num_classes + 1, activation="softmax")(output_feature)
+        validity = Dense(1)(output_feature)
+        label = Dense(self.num_classes + 1)(output_feature)
 
         model = Model([features, adj], [validity, label])
         model.summary()
 
         return model
+
+    def wasserstein_loss(self, y_true, y_pred):
+        return K.mean(y_true * y_pred)
+
+    def wasserstein_sparsed_loss(self, y_true, y_pred):
+        y_true_onehot = K.one_hot(y_true, self.num_classes+1)
+        return K.mean(y_true_onehot * y_pred)
 
     def train(self, epochs, batch_size=128, sample_interval=50, d_weight=3, train_loss=0.5):
 
@@ -149,7 +161,7 @@ class ACGAN():
         y_train, y_val, y_test, idx_train, idx_val, idx_test, train_mask = get_splits(y)
 
         # Normalize X
-        X /= X.sum(1).reshape(-1, 1)
+        X = (X-np.repeat(0.5, X.shape[0]*X.shape[1]).reshape(X.shape))*2
 
         # filter
         print('Using local pooling filters...')
@@ -190,7 +202,7 @@ class ACGAN():
             # valid = np.random.random((batch_size, 1))*0.5 + np.repeat(0.7, batch_size)
             # fake = np.random.random((batch_size, 1))*0.3
             valid = np.ones((batch_size, 1))
-            fake = np.zeros((batch_size, 1))
+            fake = -np.ones((batch_size, 1))
 
             # Sample noise as generator input
             noise = np.random.normal(0, 1, size=(batch_size, self.latent_dim))
@@ -203,21 +215,27 @@ class ACGAN():
             gen_graphs = self.generator.predict([sampled_labels, noise])
 
             # Node labels. 0-6 if image is valid or 7 if it is generated (fake)
-            node_labels = y_train[idx_real_unlabeled]
+            node_labels = np.array(y_train[idx_real_unlabeled])
             fake_labels = np.repeat(self.num_classes, batch_size)
 
             # Train the discriminator
-            if d_loss[0] > train_loss:
+            # if d_loss[0] > train_loss:
+            if True:
                 d_loss_real_unlabeled = self.discriminator_unlabeled.train_on_batch([X_sample_unlabeled, A_sample_unlabeled], [valid, node_labels])
                 d_loss_fake_unlabeled = self.discriminator_unlabeled.train_on_batch(gen_graphs, [fake, fake_labels])
                 d_loss = 0.5 * np.add(d_loss_real_unlabeled[:-1], d_loss_fake_unlabeled[:-1])
 
+                for l in self.discriminator_unlabeled.layers:
+                    weights = l.get_weights()
+                    weights = [np.clip(w, -self.clip_value, self.clip_value) for w in weights]
+                    l.set_weights(weights)
             # ---------------------
             #  Train Generator
             # ---------------------
 
             # Train the generator
-            if g_loss[0] > train_loss:
+            # if g_loss[0] > train_loss:
+            if epoch % d_weight == 0:
                 g_loss = self.combined.train_on_batch([sampled_labels, noise], [valid, sampled_labels])
 
             if d_loss[0] <= train_loss and g_loss[0] <= train_loss:
@@ -253,7 +271,7 @@ class ACGAN():
         return self.sample_sub_graph_with_center(X, A, num_samles, center_node_id, from_idx)
 
     def sample_sub_graph_with_center(self, X, A, num_samples, center_node_id, from_idx=None):
-        A_dense = A.todense()
+        A_dense = A
         X_ = np.zeros(shape=(num_samples, X.shape[1]))
         A_ = np.zeros(shape=(num_samples, num_samples))
 
