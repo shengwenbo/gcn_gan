@@ -11,7 +11,6 @@ from keras.models import Sequential, Model
 from keras.optimizers import Adam
 from keras.regularizers import l2
 from keras import backend as K
-
 from scipy.sparse import csr_matrix
 
 from tensorflow import boolean_mask
@@ -19,6 +18,7 @@ from tensorflow import boolean_mask
 import matplotlib.pyplot as plt
 
 import numpy as np
+import tensorflow as tf
 
 from gcn.gcn_layer import GCNLayer
 
@@ -26,16 +26,18 @@ from utils import *
 
 import os
 
-MAX_DEPTH=2
+MAX_DEPTH = 3
 
 class ACGAN():
-    def __init__(self, feature_dim, num_nodes, num_classes, latent_dim=32):
+    def __init__(self, feature_dim, num_nodes, num_classes, latent_dim=32, dropout_rate=0., mlp_units=(64, 128, 256)):
         # Input shape
         self.latent_dim = latent_dim
 
         self.feature_dim = feature_dim
         self.num_nodes = num_nodes
         self.num_classes = num_classes
+        self.dropout_rate = dropout_rate
+        self.mlp_units = mlp_units
 
         optimizer = Adam(0.01, 0.5)
         losses = ['binary_crossentropy', 'sparse_categorical_crossentropy']
@@ -53,9 +55,8 @@ class ACGAN():
         # and generates the corresponding digit of that label
         noise = Input(shape=(self.latent_dim,))
         label = Input(shape=(1,))
-        features = Input(shape=(self.num_nodes,self.feature_dim,))
 
-        gen_graph = self.generator([features, label, noise])
+        gen_graph = self.generator([label, noise])
 
         # For the combined model we will only train the generator
         self.discriminator_unlabeled.trainable = False
@@ -63,11 +64,11 @@ class ACGAN():
         # The discriminator takes generated image as input and determines validity
         # and the label of that image
 
-        valid,target_label = self.discriminator_unlabeled([features, gen_graph])
+        valid,target_label = self.discriminator_unlabeled(gen_graph)
 
         # The combined model  (stacked generator and discriminator)
         # Trains the generator to fool the discriminator
-        self.combined = Model([features, label, noise], [valid, target_label])
+        self.combined = Model([label, noise], [valid, target_label])
         self.combined.compile(loss=losses,
             optimizer=optimizer)
 
@@ -83,27 +84,29 @@ class ACGAN():
         directly concat label info to feature info
         :return:
         """
-        features_in = Input(shape=(self.num_nodes, self.feature_dim))
         label = Input(shape=(1,))
         label_embedding = Embedding(self.num_classes, self.latent_dim, input_length=1)(label)
         label_embedding = Reshape(target_shape=(self.latent_dim,))(label_embedding)
         noise = Input(shape=(self.latent_dim,))
         label_in = multiply([label_embedding, noise])
 
-        label_in = RepeatVector(self.num_nodes)(label_in)
-        features = concatenate([features_in, label_in])
-
         # generative model.
         #
+        # MLP
+        mlp = label_in
+        for u in self.mlp_units:
+            mlp = Dense(u)(mlp)
+            mlp = Dropout(self.dropout_rate)(mlp)
+        mlp = BatchNormalization()(mlp)
+
         # generate adj
-        adj_encoder = LSTM(self.latent_dim, return_sequences=True)(features)
-        adj_encoder = BatchNormalization()(adj_encoder)
-        adj_encoder = LeakyReLU()(adj_encoder)
-        adj = LSTM(self.num_nodes, return_sequences=True, activation="tanh")(adj_encoder)
-        # adj = LeakyReLU()(adj_decoder)
+        features = Reshape((self.num_nodes, self.feature_dim))(Dense(self.num_nodes*self.feature_dim,)(mlp))
+
+        adj = Reshape((self.num_nodes, self.num_nodes))(Dense(self.num_nodes*self.num_nodes)(mlp))
+        adj = Lambda(lambda x: (x+tf.matrix_transpose(x))/2)(adj)
 
         # Compile model
-        model = Model(inputs=[features_in, label, noise], outputs=[adj])
+        model = Model(inputs=[label, noise], outputs=[features, adj])
         model.summary()
 
         return model
@@ -116,9 +119,12 @@ class ACGAN():
         # GCN model.
         #
         h_gcn = Dropout(0.3)(features)
-        h_gcn = GCNLayer(32)([h_gcn, adj])
+        h_gcn = GCNLayer(64)([h_gcn, adj])
         h_gcn = BatchNormalization()(h_gcn)
         h_gcn = LeakyReLU()(h_gcn)
+        y_gcn = GCNLayer(32)([h_gcn, adj])
+        y_gcn = BatchNormalization()(y_gcn)
+        y_gcn = LeakyReLU()(y_gcn)
         y_gcn = GCNLayer(self.latent_dim)([h_gcn, adj])
         y_gcn = LeakyReLU()(y_gcn)
 
@@ -194,8 +200,7 @@ class ACGAN():
             sampled_labels = np.random.randint(1, self.num_classes, size=(batch_size, 1))
 
             # Generate a half batch of new images
-            gen_graphs = self.generator.predict([X_sample_unlabeled, sampled_labels, noise])
-            gen_graphs = [X_sample_unlabeled, gen_graphs]
+            gen_graphs = self.generator.predict([sampled_labels, noise])
 
             # Node labels. 0-6 if image is valid or 7 if it is generated (fake)
             node_labels = y_train[idx_real_unlabeled]
@@ -213,7 +218,10 @@ class ACGAN():
 
             # Train the generator
             if g_loss[0] > train_loss:
-                g_loss = self.combined.train_on_batch([X_sample_unlabeled, sampled_labels, noise], [valid, sampled_labels])
+                g_loss = self.combined.train_on_batch([sampled_labels, noise], [valid, sampled_labels])
+
+            if d_loss[0] <= train_loss and g_loss[0] <= train_loss:
+                train_loss *= 0.75
 
             # Plot the progress
 
