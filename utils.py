@@ -55,10 +55,7 @@ def normalize_adj(adj, symmetric=True):
         a_norm = d.dot(adj)
     return a_norm
 
-
 def preprocess_adj(adj, symmetric=True):
-    adj = adj + np.eye(adj.shape[0])
-    adj = normalize_adj(adj, symmetric)
     return adj
 
 def sample_mask(idx, l):
