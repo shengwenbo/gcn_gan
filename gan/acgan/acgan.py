@@ -2,7 +2,7 @@ from __future__ import print_function, division
 
 from keras.datasets import mnist
 from keras.layers import Input, Dense, Reshape, Flatten, Dropout, multiply, concatenate, subtract, add, dot, Lambda, RepeatVector
-from keras.layers.recurrent import SimpleRNN
+from keras.layers.recurrent import LSTM
 from keras.layers import BatchNormalization, Activation, Embedding, ZeroPadding2D
 from keras.layers.advanced_activations import LeakyReLU
 from keras.layers.convolutional import UpSampling2D, Conv2D
@@ -61,8 +61,9 @@ class ACGAN():
         # and generates the corresponding digit of that label
         noise = Input(shape=(self.latent_dim,))
         label = Input(shape=(1,))
+        features = Input(shape=(self.num_nodes,self.feature_dim,))
 
-        gen_graph = self.generator([label, noise])
+        gen_graph = self.generator([features, label, noise])
 
         # For the combined model we will only train the generator
         self.discriminator_unlabeled.trainable = False
@@ -71,12 +72,12 @@ class ACGAN():
         # The discriminator takes generated image as input and determines validity
         # and the label of that image
 
-        valid = self.discriminator_unlabeled(gen_graph)[0]
-        target_label = self.discriminator_labeled(gen_graph)
+        valid = self.discriminator_unlabeled([features, gen_graph])[0]
+        target_label = self.discriminator_labeled([features, gen_graph])
 
         # The combined model  (stacked generator and discriminator)
         # Trains the generator to fool the discriminator
-        self.combined = Model([label, noise], [valid, target_label])
+        self.combined = Model([features, label, noise], [valid, target_label])
         self.combined.compile(loss=losses,
             optimizer=optimizer)
 
@@ -93,24 +94,26 @@ class ACGAN():
         directly concat label info to feature info
         :return:
         """
+        features_in = Input(shape=(self.num_nodes, self.feature_dim))
         label = Input(shape=(1,))
         label_embedding = Embedding(self.num_classes, self.latent_dim, input_length=1)(label)
         label_embedding = Reshape(target_shape=(self.latent_dim,))(label_embedding)
         noise = Input(shape=(self.latent_dim,))
         label_in = multiply([label_embedding, noise])
 
-        input_feature = RepeatVector(self.num_nodes)(label_in)
+        label_in = RepeatVector(self.num_nodes)(label_in)
+        features = concatenate([features_in, label_in])
 
         # generative model.
         #
-        # generate features
-        features = SimpleRNN(self.feature_dim, return_sequences=True)(input_feature)
         # generate adj
-        adj = SimpleRNN(self.num_nodes, return_sequences=True)(input_feature)
-        adj = LeakyReLU()(adj)
+        adj_encoder = LSTM(self.latent_dim, return_sequences=True)(features)
+        adj_encoder = LeakyReLU()(adj_encoder)
+        adj_decoder = LSTM(self.num_nodes, return_sequences=True)(adj_encoder)
+        adj = LeakyReLU()(adj_decoder)
 
         # Compile model
-        model = Model(inputs=[label, noise], outputs=[features, adj])
+        model = Model(inputs=[features_in, label, noise], outputs=[adj])
         model.summary()
 
         return model
@@ -209,7 +212,8 @@ class ACGAN():
             sampled_labels = np.random.randint(1, self.num_classes, size=(batch_size, 1))
 
             # Generate a half batch of new images
-            gen_graphs = self.generator.predict([sampled_labels, noise])
+            gen_graphs = self.generator.predict([X_sample_unlabeled, sampled_labels, noise])
+            gen_graphs = [X_sample_unlabeled, gen_graphs]
 
             # Node labels. 0-6 if image is valid or 7 if it is generated (fake)
             node_labels = y_train[idx_real_labeled]
@@ -230,7 +234,7 @@ class ACGAN():
 
             # Train the generator
             if epoch % d_weight == 0:
-                g_loss = self.combined.train_on_batch([sampled_labels, noise], [valid, sampled_labels])
+                g_loss = self.combined.train_on_batch([X_sample_unlabeled, sampled_labels, noise], [valid, sampled_labels])
 
             # Plot the progress
 
