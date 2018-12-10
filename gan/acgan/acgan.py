@@ -3,6 +3,7 @@ from __future__ import print_function, division
 from keras.datasets import mnist
 from keras.layers import Input, Dense, Reshape, Flatten, Dropout, multiply, concatenate, subtract, add, dot, Lambda, RepeatVector
 from keras.layers.recurrent import LSTM
+from keras.layers.normalization import BatchNormalization
 from keras.layers import BatchNormalization, Activation, Embedding, ZeroPadding2D
 from keras.layers.advanced_activations import LeakyReLU
 from keras.layers.convolutional import UpSampling2D, Conv2D
@@ -36,7 +37,7 @@ class ACGAN():
         self.num_nodes = num_nodes
         self.num_classes = num_classes
 
-        optimizer = Adam(0.001, 0.5)
+        optimizer = Adam(0.01, 0.5)
         losses = ['binary_crossentropy', 'sparse_categorical_crossentropy']
 
         # Build and compile the discriminator
@@ -96,9 +97,10 @@ class ACGAN():
         #
         # generate adj
         adj_encoder = LSTM(self.latent_dim, return_sequences=True)(features)
+        adj_encoder = BatchNormalization()(adj_encoder)
         adj_encoder = LeakyReLU()(adj_encoder)
-        adj_decoder = LSTM(self.num_nodes, return_sequences=True)(adj_encoder)
-        adj = LeakyReLU()(adj_decoder)
+        adj = LSTM(self.num_nodes, return_sequences=True, activation="tanh")(adj_encoder)
+        # adj = LeakyReLU()(adj_decoder)
 
         # Compile model
         model = Model(inputs=[features_in, label, noise], outputs=[adj])
@@ -113,10 +115,10 @@ class ACGAN():
 
         # GCN model.
         #
-        h_gcn = Dropout(0.5)(features)
+        h_gcn = Dropout(0.3)(features)
         h_gcn = GCNLayer(32)([h_gcn, adj])
+        h_gcn = BatchNormalization()(h_gcn)
         h_gcn = LeakyReLU()(h_gcn)
-        h_gcn = Dropout(0.5)(h_gcn)
         y_gcn = GCNLayer(self.latent_dim)([h_gcn, adj])
         y_gcn = LeakyReLU()(y_gcn)
 
@@ -134,7 +136,7 @@ class ACGAN():
 
         return model
 
-    def train(self, epochs, batch_size=128, sample_interval=50, d_weight=3):
+    def train(self, epochs, batch_size=128, sample_interval=50, d_weight=3, train_loss=0.5):
 
         # Get data
         X, A, y = load_data(path="../../data/cora/", dataset="cora")
@@ -147,6 +149,9 @@ class ACGAN():
         print('Using local pooling filters...')
         support = 1
         graph = [X, A]
+
+        d_loss = [1000]
+        g_loss = [1000]
 
         for epoch in range(epochs):
 
@@ -176,6 +181,8 @@ class ACGAN():
             # print(A_sample_unlabeled)
 
             # Adversarial ground truths
+            # valid = np.random.random((batch_size, 1))*0.5 + np.repeat(0.7, batch_size)
+            # fake = np.random.random((batch_size, 1))*0.3
             valid = np.ones((batch_size, 1))
             fake = np.zeros((batch_size, 1))
 
@@ -195,21 +202,22 @@ class ACGAN():
             fake_labels = np.repeat(self.num_classes, batch_size)
 
             # Train the discriminator
-            d_loss_real_unlabeled = self.discriminator_unlabeled.train_on_batch([X_sample_unlabeled, A_sample_unlabeled], [valid, node_labels])
-            d_loss_fake_unlabeled = self.discriminator_unlabeled.train_on_batch(gen_graphs, [fake, fake_labels])
-            d_loss_unlabeled = 0.5 * np.add(d_loss_real_unlabeled[:-1], d_loss_fake_unlabeled[:-1])
+            if d_loss[0] > train_loss:
+                d_loss_real_unlabeled = self.discriminator_unlabeled.train_on_batch([X_sample_unlabeled, A_sample_unlabeled], [valid, node_labels])
+                d_loss_fake_unlabeled = self.discriminator_unlabeled.train_on_batch(gen_graphs, [fake, fake_labels])
+                d_loss = 0.5 * np.add(d_loss_real_unlabeled[:-1], d_loss_fake_unlabeled[:-1])
 
             # ---------------------
             #  Train Generator
             # ---------------------
 
             # Train the generator
-            if epoch % d_weight == 0:
+            if g_loss[0] > train_loss:
                 g_loss = self.combined.train_on_batch([X_sample_unlabeled, sampled_labels, noise], [valid, sampled_labels])
 
             # Plot the progress
 
-            print("{} [Disciminator loss: {}, validate acc:{} label acc:{}, generater loss: {}]".format(epoch, d_loss_unlabeled, d_loss_unlabeled[1]*100, d_loss_unlabeled[3]*100, g_loss))
+            print("{} [Disciminator loss: {}, validate acc:{} label acc:{}, generater loss: {}]".format(epoch, d_loss, d_loss[1]*100, d_loss[3]*100, g_loss))
 
             # print ("%d [Unlabeled loss: %f, acc.: %.2f%%, op_acc: %.2f%%] [G loss: %f]" % (epoch, d_loss_unlabeled[0], 100*d_loss_unlabeled[3], 100*d_loss_unlabeled[4], g_loss[0]))
             # print("\t[Unlabeled loss real: %f, acc.: %.2f%%, op_acc: %.2f%%]" % (
@@ -327,4 +335,4 @@ class ACGAN():
 
 if __name__ == '__main__':
     acgan = ACGAN(1433, 16, 7)
-    acgan.train(epochs=14001, batch_size=16, sample_interval=200, d_weight=4)
+    acgan.train(epochs=14001, batch_size=8, sample_interval=200, d_weight=4, train_loss=2)

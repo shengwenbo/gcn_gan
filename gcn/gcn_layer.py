@@ -42,29 +42,49 @@ class GCNLayer(Layer):
         features_shape = input_shapes[0]
         input_dim = features_shape[-1]
 
-        self.kernel = self.add_weight(shape=(input_dim, self.units),
+        self.Q = self.add_weight(shape=(input_dim, input_dim),
+                                      initializer=self.kernel_initializer,
+                                      name='kernel',
+                                      regularizer=self.kernel_regularizer,
+                                      constraint=self.kernel_constraint)
+        self.W = self.add_weight(shape=(input_dim*2, self.units),
                                       initializer=self.kernel_initializer,
                                       name='kernel',
                                       regularizer=self.kernel_regularizer,
                                       constraint=self.kernel_constraint)
         if self.use_bias:
-            self.bias = self.add_weight(shape=(self.units,),
+            self.q = self.add_weight(shape=(input_dim,),
                                         initializer=self.bias_initializer,
                                         name='bias',
                                         regularizer=self.bias_regularizer,
                                         constraint=self.bias_constraint)
+            self.w = self.add_weight(shape=(self.units,),
+                                     initializer=self.bias_initializer,
+                                     name='bias',
+                                     regularizer=self.bias_regularizer,
+                                     constraint=self.bias_constraint)
         else:
-            self.bias = None
+            self.q = None
+            self.w = None
         self.built = True
 
     def call(self, inputs, **kwargs):
         features = inputs[0]
         adj = inputs[1]
+        num_nodes = features.shape[1]
 
-        output = K.batch_dot(adj, features)
-        output = K.dot(output, self.kernel)
+        features_dense = K.dot(features, self.Q)
+        if self.q:
+            features_dense += self.q
 
-        if self.bias:
-            output += self.bias
+        features_agg = K.batch_dot(adj, features_dense)
 
-        return self.activation(output)
+        features_conc = K.concatenate([features, features_agg])
+
+        features_new = K.dot(features_conc, self.W)
+        if self.w:
+            features_new += self.w
+
+        features_new = K.l2_normalize(features_new)
+
+        return self.activation(features_new)
