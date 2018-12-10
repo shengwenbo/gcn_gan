@@ -173,7 +173,7 @@ class ACGAN():
             A_sample_unlabeled = np.array(A_sample_unlabeled)
 
             print(idx_real_unlabeled)
-            print(A_sample_unlabeled)
+            # print(A_sample_unlabeled)
 
             # Adversarial ground truths
             valid = np.ones((batch_size, 1))
