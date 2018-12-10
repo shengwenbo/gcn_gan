@@ -25,6 +25,8 @@ from utils import *
 
 import os
 
+MAX_DEPTH=2
+
 class ACGAN():
     def __init__(self, feature_dim, num_nodes, num_classes, latent_dim=32):
         # Input shape
@@ -39,20 +41,9 @@ class ACGAN():
 
         # Build and compile the discriminator
         self.discriminator_unlabeled = self.build_discriminator_unlabeled()
-        self.discriminator_unlabeled.compile(loss=["binary_crossentropy", ignore_loss],
+        self.discriminator_unlabeled.compile(loss=losses,
             optimizer=optimizer,
             metrics=['accuracy'])
-
-        self.discriminator_unlabeled.trainable = False
-        adj = Input(shape=(self.num_nodes, self.num_nodes,))
-        features = Input(shape=(self.num_nodes, self.feature_dim,))
-        graph_embedding = self.discriminator_unlabeled([features, adj])[1]
-        label = Dense(self.num_classes+1, activation="softmax")(graph_embedding)
-        self.discriminator_labeled = Model([features, adj], [label])
-        self.discriminator_labeled.summary()
-        self.discriminator_labeled.compile(loss=["sparse_categorical_crossentropy"],
-                                             optimizer=optimizer,
-                                             metrics=["accuracy"])
 
         # Build the generator
         self.generator = self.build_generator()
@@ -67,13 +58,11 @@ class ACGAN():
 
         # For the combined model we will only train the generator
         self.discriminator_unlabeled.trainable = False
-        self.discriminator_labeled.trainable = False
 
         # The discriminator takes generated image as input and determines validity
         # and the label of that image
 
-        valid = self.discriminator_unlabeled([features, gen_graph])[0]
-        target_label = self.discriminator_labeled([features, gen_graph])
+        valid,target_label = self.discriminator_unlabeled([features, gen_graph])
 
         # The combined model  (stacked generator and discriminator)
         # Trains the generator to fool the discriminator
@@ -85,7 +74,6 @@ class ACGAN():
         if(os.listdir("saved_model")):
             print("Loading weights from saved_model/")
             self.generator.load_weights("saved_model/generator_weights.hdf5")
-            self.discriminator_labeled.load_weights("saved_model/discriminator_labeled_weights.hdf5")
             self.discriminator_unlabeled.load_weights("saved_model/discriminator_unlabeled_weights.hdf5")
             print("Done.")
 
@@ -139,19 +127,9 @@ class ACGAN():
 
         # Determine validity
         validity = Dense(1, activation="sigmoid")(output_feature)
+        label = Dense(self.num_classes + 1, activation="softmax")(output_feature)
 
-        model = Model([features, adj], [validity, output_feature])
-        model.summary()
-
-        return model
-
-    def build_discriminator_labeled(self):
-
-        feature = Input(shape=(self.latent_dim,))
-
-        label = Dense(self.num_classes+1, activation="softmax")(feature)
-
-        model = Model([feature], [label])
+        model = Model([features, adj], [validity, label])
         model.summary()
 
         return model
@@ -176,29 +154,26 @@ class ACGAN():
             #  Train Discriminator
             # ---------------------
 
-            X_sample_labeled = []
-            A_sample_labeled = []
-            idx_real_labeled = []
-            for i in range(batch_size):
-                x, a, i = self.sample_sub_graph(X, A, batch_size, idx_train)
-                a = preprocess_adj(a)
-                X_sample_labeled.append(x)
-                A_sample_labeled.append(a)
-                idx_real_labeled.append(i[0])
-            X_sample_labeled = np.array(X_sample_labeled)
-            A_sample_labeled = np.array(A_sample_labeled)
-
             X_sample_unlabeled = []
             A_sample_unlabeled = []
             idx_real_unlabeled = []
-            for i in range(batch_size):
-                x, a, i = self.sample_sub_graph(X, A, batch_size, range(X.shape[0]))
+            for _ in range(batch_size//2):
+                x, a, i = self.sample_sub_graph(X, A, self.num_nodes, range(X.shape[0]))
+                a = preprocess_adj(a)
+                X_sample_unlabeled.append(x)
+                A_sample_unlabeled.append(a)
+                idx_real_unlabeled.append(i[0])
+            for _ in range(batch_size//2):
+                x, a, i = self.sample_sub_graph(X, A, self.num_nodes, idx_train)
                 a = preprocess_adj(a)
                 X_sample_unlabeled.append(x)
                 A_sample_unlabeled.append(a)
                 idx_real_unlabeled.append(i[0])
             X_sample_unlabeled = np.array(X_sample_unlabeled)
             A_sample_unlabeled = np.array(A_sample_unlabeled)
+
+            print(idx_real_unlabeled)
+            print(A_sample_unlabeled)
 
             # Adversarial ground truths
             valid = np.ones((batch_size, 1))
@@ -216,17 +191,13 @@ class ACGAN():
             gen_graphs = [X_sample_unlabeled, gen_graphs]
 
             # Node labels. 0-6 if image is valid or 7 if it is generated (fake)
-            node_labels = y_train[idx_real_labeled]
+            node_labels = y_train[idx_real_unlabeled]
             fake_labels = np.repeat(self.num_classes, batch_size)
 
             # Train the discriminator
-            d_loss_real_unlabeled = self.discriminator_unlabeled.train_on_batch([X_sample_unlabeled, A_sample_unlabeled], [valid, np.zeros((batch_size,self.num_nodes,100))])
-            d_loss_fake_unlabeled = self.discriminator_unlabeled.train_on_batch(gen_graphs, [fake, np.zeros((batch_size,self.num_nodes,100))])
+            d_loss_real_unlabeled = self.discriminator_unlabeled.train_on_batch([X_sample_unlabeled, A_sample_unlabeled], [valid, node_labels])
+            d_loss_fake_unlabeled = self.discriminator_unlabeled.train_on_batch(gen_graphs, [fake, fake_labels])
             d_loss_unlabeled = 0.5 * np.add(d_loss_real_unlabeled[:-1], d_loss_fake_unlabeled[:-1])
-
-            d_loss_real_labeled = self.discriminator_labeled.train_on_batch([X_sample_labeled, A_sample_labeled], [node_labels])
-            d_loss_fake_labeled = self.discriminator_labeled.train_on_batch(gen_graphs, [fake_labels])
-            d_loss_labeled = 0.5 * np.add(d_loss_real_labeled, d_loss_fake_labeled)
 
             # ---------------------
             #  Train Generator
@@ -238,7 +209,7 @@ class ACGAN():
 
             # Plot the progress
 
-            print("{} [Unlabeled loss: {}, labeled loss: {}, generater loss: {}]".format(epoch, d_loss_unlabeled, d_loss_labeled, g_loss))
+            print("{} [Disciminator loss: {}, validate acc:{} label acc:{}, generater loss: {}]".format(epoch, d_loss_unlabeled, d_loss_unlabeled[1]*100, d_loss_unlabeled[3]*100, g_loss))
 
             # print ("%d [Unlabeled loss: %f, acc.: %.2f%%, op_acc: %.2f%%] [G loss: %f]" % (epoch, d_loss_unlabeled[0], 100*d_loss_unlabeled[3], 100*d_loss_unlabeled[4], g_loss[0]))
             # print("\t[Unlabeled loss real: %f, acc.: %.2f%%, op_acc: %.2f%%]" % (
@@ -255,7 +226,7 @@ class ACGAN():
             # If at save interval => save generated image samples
             if epoch % sample_interval == 0:
                 # self.save_model()
-                self.val(y_val, idx_val, X, A, batch_size)
+                self.val(y_val, idx_val, X, A, self.num_nodes)
                 self.save_model()
 
     def sample_sub_graph(self, X, A, num_samles, from_idx=None):
@@ -284,7 +255,7 @@ class ACGAN():
         return X_, A_, node_ids
 
     def _sample_sub_graph_id(self, A, num_samples, center_node_id, from_idx=None):
-        node_ids = [center_node_id]
+        node_ids = [(center_node_id,0)]
         if from_idx:
             tags = np.ones(A.shape[0])
             tags[from_idx] = 0
@@ -293,17 +264,17 @@ class ACGAN():
         tags[center_node_id] = 1
 
         count = 1
-        for id_base in node_ids:
+        for id_base,depth in node_ids:
             for id_next in range(A.shape[0]):
-                if A[id_base, id_next] > 0 and tags[id_next] < 0.5:
-                    node_ids.append(id_next)
+                if A[id_base, id_next] > 0 and tags[id_next] < 0.5 and depth < MAX_DEPTH:
+                    node_ids.append((id_next, depth+1))
                     tags[id_next] = 1
                     count += 1
                     if count == num_samples:
-                        return node_ids
+                        return [ni[0] for ni in node_ids]
 
-        [node_ids.append(-1) for i in range(count, num_samples)]
-        return node_ids
+        [node_ids.append((-1,-1)) for i in range(count, num_samples)]
+        return [ni[0] for ni in node_ids]
 
     def val(self, y_val, val_idx, X, A, batch_size):
         y_val = encode_onehot(y_val)
@@ -317,7 +288,7 @@ class ACGAN():
             A_.append(a)
         X_ = np.array(X_)
         A_ = np.array(A_)
-        pred_classes = self.discriminator_labeled.predict([X_, A_])
+        pred_classes = self.discriminator_unlabeled.predict([X_, A_])[1]
         loss, acc = evaluate_preds(pred_classes, y_val, val_idx)
         print("Val: loss : %.2f,  acc : %.2f%%" % (loss, acc*100))
 
@@ -350,8 +321,8 @@ class ACGAN():
             open(options['file_arch'], 'w').write(json_string)
             model.save_weights(options['file_weight'])
 
+
         save(self.generator, "generator")
-        save(self.discriminator_labeled, "discriminator_labeled")
         save(self.discriminator_unlabeled, "discriminator_unlabeled")
 
 if __name__ == '__main__':

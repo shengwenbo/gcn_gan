@@ -61,7 +61,6 @@ def preprocess_adj(adj, symmetric=True):
     adj = normalize_adj(adj, symmetric)
     return adj
 
-
 def sample_mask(idx, l):
     mask = np.zeros(l)
     mask[idx] = 1
