@@ -151,3 +151,9 @@ def shuffle_data(X, A, y):
 
 def ignore_loss(y_true, y_pred):
     return K.constant(0)
+
+def neg_categorical_crossentropy(y_true, y_pred):
+    return -K.categorical_crossentropy(y_true, y_pred)
+
+def convert_to_one_hot(y, C):
+    return np.eye(C)[y.reshape(-1)]
