@@ -237,7 +237,7 @@ class SGAN():
             # ---------------------
 
             # Train the generator
-            if (g_loss[0] > train_loss and d_loss[0] < train_loss) or epoch % d_weight == 0:
+            if g_loss[0] > train_loss:
                 layer_out = self.discriminator_base.predict([X_sample, A_sample])[1:]
                 g_loss = self.combined.train_on_batch(noise, [fake_labels]+layer_out)
 
@@ -364,4 +364,4 @@ class SGAN():
 
 if __name__ == '__main__':
     acgan = SGAN(1433, 16, 7)
-    acgan.train(epochs=14001, batch_size=64, sample_interval=200, d_weight=8, u_weight=2, train_loss=3)
+    acgan.train(epochs=14001, batch_size=32, sample_interval=200, d_weight=1, u_weight=10, train_loss=3)
