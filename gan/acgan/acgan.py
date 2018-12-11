@@ -95,15 +95,17 @@ class ACGAN():
         # MLP
         mlp = label_in
         for u in self.mlp_units:
-            mlp = Dense(u)(mlp)
+            mlp = Dense(u, activation="tanh")(mlp)
             mlp = Dropout(self.dropout_rate)(mlp)
         mlp = BatchNormalization()(mlp)
 
         # generate adj
         features = Reshape((self.num_nodes, self.feature_dim))(Dense(self.num_nodes*self.feature_dim,)(mlp))
+        features = Dropout(self.dropout_rate)(features)
 
         adj = Reshape((self.num_nodes, self.num_nodes))(Dense(self.num_nodes*self.num_nodes)(mlp))
         adj = Lambda(lambda x: (x+tf.matrix_transpose(x))/2)(adj)
+        adj = Dropout(self.dropout_rate)(adj)
 
         # Compile model
         model = Model(inputs=[label, noise], outputs=[features, adj])
@@ -125,7 +127,7 @@ class ACGAN():
         y_gcn = GCNLayer(32)([h_gcn, adj])
         y_gcn = BatchNormalization()(y_gcn)
         y_gcn = LeakyReLU()(y_gcn)
-        y_gcn = GCNLayer(self.latent_dim)([h_gcn, adj])
+        y_gcn = GCNLayer(self.latent_dim)([y_gcn, adj])
         y_gcn = LeakyReLU()(y_gcn)
 
         # y_gcn = Flatten()(y_gcn)
@@ -142,7 +144,7 @@ class ACGAN():
 
         return model
 
-    def train(self, epochs, batch_size=128, sample_interval=50, d_weight=3, train_loss=0.5):
+    def train(self, epochs, batch_size=128, sample_interval=50, g_weight=3, train_loss=0.5):
 
         # Get data
         X, A, y = load_data(path="../../data/cora/", dataset="cora")
@@ -168,18 +170,18 @@ class ACGAN():
             X_sample_unlabeled = []
             A_sample_unlabeled = []
             idx_real_unlabeled = []
-            for _ in range(batch_size//2):
+            for _ in range(batch_size):
                 x, a, i = self.sample_sub_graph(X, A, self.num_nodes, range(X.shape[0]))
                 a = preprocess_adj(a)
                 X_sample_unlabeled.append(x)
                 A_sample_unlabeled.append(a)
                 idx_real_unlabeled.append(i[0])
-            for _ in range(batch_size//2):
-                x, a, i = self.sample_sub_graph(X, A, self.num_nodes, idx_train)
-                a = preprocess_adj(a)
-                X_sample_unlabeled.append(x)
-                A_sample_unlabeled.append(a)
-                idx_real_unlabeled.append(i[0])
+            # for _ in range(batch_size):
+            #     x, a, i = self.sample_sub_graph(X, A, self.num_nodes, idx_train)
+            #     a = preprocess_adj(a)
+            #     X_sample_unlabeled.append(x)
+            #     A_sample_unlabeled.append(a)
+            #     idx_real_unlabeled.append(i[0])
             X_sample_unlabeled = np.array(X_sample_unlabeled)
             A_sample_unlabeled = np.array(A_sample_unlabeled)
 
@@ -207,7 +209,7 @@ class ACGAN():
             fake_labels = np.repeat(self.num_classes, batch_size)
 
             # Train the discriminator
-            if d_loss[0] > train_loss:
+            if epoch % g_weight == 0 and d_loss[0] > train_loss:
                 d_loss_real_unlabeled = self.discriminator_unlabeled.train_on_batch([X_sample_unlabeled, A_sample_unlabeled], [valid, node_labels])
                 d_loss_fake_unlabeled = self.discriminator_unlabeled.train_on_batch(gen_graphs, [fake, fake_labels])
                 d_loss = 0.5 * np.add(d_loss_real_unlabeled[:-1], d_loss_fake_unlabeled[:-1])
@@ -343,4 +345,4 @@ class ACGAN():
 
 if __name__ == '__main__':
     acgan = ACGAN(1433, 16, 7)
-    acgan.train(epochs=14001, batch_size=8, sample_interval=200, d_weight=4, train_loss=2)
+    acgan.train(epochs=14001, batch_size=8, sample_interval=200, g_weight=8, train_loss=3)
