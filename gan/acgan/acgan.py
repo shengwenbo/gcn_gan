@@ -42,7 +42,7 @@ class ACGAN():
         self.clip_value = clip_value
 
         optimizer = RMSprop(0.00005)
-        losses = [self.wasserstein_loss, "sparse_categorical_crossentropy"]
+        losses = [self.wasserstein_loss, self.wasserstein_loss]
 
         # Build and compile the discriminator
         self.discriminator_unlabeled = self.build_discriminator_unlabeled()
@@ -271,7 +271,7 @@ class ACGAN():
         return self.sample_sub_graph_with_center(X, A, num_samles, center_node_id, from_idx)
 
     def sample_sub_graph_with_center(self, X, A, num_samples, center_node_id, from_idx=None):
-        A_dense = A
+        A_dense = A.todense()
         X_ = np.zeros(shape=(num_samples, X.shape[1]))
         A_ = np.zeros(shape=(num_samples, num_samples))
 
