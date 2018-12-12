@@ -113,7 +113,7 @@ class SGAN():
 
         adj = Reshape((self.num_nodes, self.num_nodes))(Dense(self.num_nodes*self.num_nodes)(mlp))
         adj = Lambda(lambda x: (x+tf.matrix_transpose(x))/2)(adj)
-        adj = Activation("tanh")(adj)
+        # adj = Activation("tanh")(adj)
 
         # Compile model
         model = Model(inputs=noise, outputs=[features, adj])
@@ -165,7 +165,8 @@ class SGAN():
         y_train, y_val, y_test, idx_train, idx_val, idx_test, train_mask = get_splits(y)
 
         # Normalize X
-        X /= X.sum(1).reshape(-1, 1)
+        # X /= X.sum(1).reshape(-1, 1)
+        X = (X-np.full_like(X, 0.5))*2
 
         d_loss = [1000]
         g_loss = [1000]
