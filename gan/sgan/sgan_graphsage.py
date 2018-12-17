@@ -66,9 +66,9 @@ class SGAN():
 
         # The generator takes noise and the target label as input
         # and generates the corresponding digit of that label
-        noise = Input(shape=(self.latent_dim,))
+        x = Input(shape=(self.feature_dim,))
 
-        [x, gen_neighbors] = self.generator(noise)
+        gen_neighbors = self.generator(x)
 
         # For the combined model we will only train the generator
         self.discriminator_base.trainable = False
@@ -80,7 +80,7 @@ class SGAN():
 
         # The combined model  (stacked generator and discriminator)
         # Trains the generator to fool the discriminator
-        self.combined = Model(noise, out)
+        self.combined = Model(x, out)
         self.combined.compile(loss=losses,
                               loss_weights=loss_weights,
             optimizer=optimizer)
@@ -99,26 +99,22 @@ class SGAN():
         directly concat label info to feature info
         :return:
         """
-        noise = Input(shape=(self.latent_dim,))
+        x = Input(shape=(self.feature_dim,))
 
         # generative model.
         #
         # MLP
-        mlp = noise
+        mlp = x
         for u in self.mlp_units:
             mlp = Dense(u, activation="relu")(mlp)
             mlp = Dropout(self.dropout_rate)(mlp)
-
-        # generate center node
-        x = Dense(self.feature_dim,)(mlp)
-        x = Activation("tanh")(x)
 
         # generate neighbors
         neighbors = Reshape((self.num_neighbors, self.feature_dim))(Dense(self.num_neighbors * self.feature_dim, )(mlp))
         neighbors = Activation("tanh")(neighbors)
 
         # Compile model
-        model = Model(inputs=noise, outputs=[x, neighbors])
+        model = Model(inputs=x, outputs=neighbors)
         print("\n\n===================================generator==============================")
         model.summary()
 
@@ -205,9 +201,6 @@ class SGAN():
             # valid = np.random.random((batch_size, 1))*0.5 + np.repeat(0.7, batch_size)
             # fake = np.random.random((batch_size, 1))*0.3
 
-            # Sample noise as generator input
-            noise = np.random.normal(0, 1, size=(batch_size, self.latent_dim))
-
             # Node labels. 0-6 if image is valid or 7 if it is generated (fake)
             if supervised:
                 node_labels = convert_to_one_hot(y_train[idx_sample], self.num_classes+1)
@@ -216,12 +209,12 @@ class SGAN():
 
             # Train the discriminator
             if epoch % (g_weight + d_weight) < d_weight:
-                gen_neighbors = self.generator.predict(noise)
+                gen_neighbors = self.generator.predict(X_sample)
                 if supervised:
                     d_loss_real = self.discriminator_l.train_on_batch([X_sample, N_sample], node_labels)
                 else:
                     d_loss_real = self.discriminator_u.train_on_batch([X_sample, N_sample], node_labels)
-                d_loss_fake = self.discriminator_l.train_on_batch(gen_neighbors, fake_labels)
+                d_loss_fake = self.discriminator_l.train_on_batch([X_sample, gen_neighbors], fake_labels)
                 d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
 
             # ---------------------
@@ -231,7 +224,7 @@ class SGAN():
             # Train the generator
             if epoch % (g_weight + d_weight) >= d_weight:
                 layer_out = self.discriminator_base.predict([X_sample, N_sample])[1:]
-                g_loss = self.combined.train_on_batch(noise, [fake_labels]+layer_out)
+                g_loss = self.combined.train_on_batch(X_sample, [fake_labels]+layer_out)
 
             if d_loss[0] <= train_loss and g_loss[0] <= train_loss:
                 train_loss *= 0.75
