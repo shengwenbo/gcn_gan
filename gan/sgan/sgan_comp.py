@@ -40,7 +40,7 @@ class SGAN():
         self.dropout_rate = dropout_rate
         self.mlp_units = mlp_units
 
-        optimizer = Adam(0.002, 0.5)
+        optimizer = Adam(0.001, 0.5)
         losses = [neg_categorical_crossentropy] + ['mse']*GCN_LAYERS
         loss_weights = [1] + [0.01]*GCN_LAYERS
 
@@ -132,15 +132,15 @@ class SGAN():
         # GCN model.
         #
         h_gcn = Dropout(self.dropout_rate)(features)
-        h_gcn = GCNLayer(64)([h_gcn, adj])
+        h_gcn = GCNLayer(128)([h_gcn, adj])
         h_gcn = LeakyReLU()(h_gcn)
         layer_features.append(h_gcn)
         h_gcn = Dropout(self.dropout_rate)(h_gcn)
-        y_gcn = GCNLayer(32)([h_gcn, adj])
+        y_gcn = GCNLayer(64)([h_gcn, adj])
         y_gcn = LeakyReLU()(y_gcn)
         layer_features.append(y_gcn)
         y_gcn = Dropout(self.dropout_rate)(y_gcn)
-        y_gcn = GCNLayer(self.latent_dim)([y_gcn, adj])
+        y_gcn = GCNLayer(32)([y_gcn, adj])
         y_gcn = LeakyReLU()(y_gcn)
         layer_features.append(y_gcn)
 
@@ -158,7 +158,7 @@ class SGAN():
 
         return model
 
-    def train(self, epochs, batch_size=128, sample_interval=50, d_weight=3, u_weight=5, train_loss=0.5):
+    def train(self, epochs, batch_size=128, sample_interval=50, d_weight=3, g_weight=1, u_weight=5, train_loss=0.5):
 
         # Get data
         X, A, y = load_data(path="../../data/cora/", dataset="cora")
@@ -224,7 +224,8 @@ class SGAN():
                 node_labels = fake_labels
 
             # Train the discriminator
-            if d_loss[0] > train_loss:
+            # if d_loss[0] > train_loss:
+            if epoch % (g_weight + d_weight) < d_weight:
                 gen_graphs = self.generator.predict(noise)
                 if supervised:
                     d_loss_real = self.discriminator_l.train_on_batch([X_sample, A_sample], node_labels)
@@ -238,7 +239,8 @@ class SGAN():
             # ---------------------
 
             # Train the generator
-            if g_loss[0] > train_loss:
+            # if g_loss[0] > train_loss:
+            if epoch % (g_weight + d_weight) >= d_weight:
                 layer_out = self.discriminator_base.predict([X_sample, A_sample])[1:]
                 g_loss = self.combined.train_on_batch(noise, [fake_labels]+layer_out)
 
@@ -365,4 +367,4 @@ class SGAN():
 
 if __name__ == '__main__':
     acgan = SGAN(1433, 16, 7)
-    acgan.train(epochs=14001, batch_size=32, sample_interval=200, d_weight=1, u_weight=10, train_loss=3)
+    acgan.train(epochs=14001, batch_size=32, sample_interval=200, d_weight=1, g_weight=5, u_weight=10, train_loss=3)
