@@ -32,7 +32,7 @@ MAX_DEPTH = 3
 GCN_LAYERS = 1
 
 class SGAN():
-    def __init__(self, feature_dim, num_neighbors, num_classes, latent_dim=32, dropout_rate=0., mlp_units=(32, 64, 128)):
+    def __init__(self, feature_dim, num_neighbors, num_classes, latent_dim=128, dropout_rate=0., mlp_units=(64, 128, 256)):
         # Input shape
         self.latent_dim = latent_dim
 
@@ -43,8 +43,8 @@ class SGAN():
         self.mlp_units = mlp_units
 
         optimizer = Adam(0.001, 0.5)
-        losses = [neg_categorical_crossentropy] + ['mse']*GCN_LAYERS
-        loss_weights = [1] + [0.01]*GCN_LAYERS
+        losses = [neg_categorical_crossentropy] + ['mse']
+        loss_weights = [1] + [0.1]
 
         # Build and compile the discriminator
         self.discriminator_base = self.build_discriminator()
@@ -76,11 +76,11 @@ class SGAN():
         # The discriminator takes generated image as input and determines validity
         # and the label of that image
 
-        out = self.discriminator_base([x, gen_neighbors])
+        label = self.discriminator_base([x, gen_neighbors])[0]
 
         # The combined model  (stacked generator and discriminator)
         # Trains the generator to fool the discriminator
-        self.combined = Model(x, out)
+        self.combined = Model(x, [label, gen_neighbors])
         self.combined.compile(loss=losses,
                               loss_weights=loss_weights,
             optimizer=optimizer)
@@ -171,7 +171,7 @@ class SGAN():
             # ---------------------
 
             if epoch % u_weight == 0:
-                supervised = False
+                supervised = True
             else:
                 supervised = False
 
@@ -223,8 +223,7 @@ class SGAN():
 
             # Train the generator
             if epoch % (g_weight + d_weight) >= d_weight:
-                layer_out = self.discriminator_base.predict([X_sample, N_sample])[1:]
-                g_loss = self.combined.train_on_batch(X_sample, [fake_labels]+layer_out)
+                g_loss = self.combined.train_on_batch(X_sample, [fake_labels, N_sample])
 
             if d_loss[0] <= train_loss and g_loss[0] <= train_loss:
                 train_loss *= 0.75
@@ -318,4 +317,4 @@ class SGAN():
 
 if __name__ == '__main__':
     acgan = SGAN(1433, 16, 7)
-    acgan.train(epochs=14001, batch_size=32, sample_interval=200, g_weight=10, d_weight=1, u_weight=10, train_loss=3)
+    acgan.train(epochs=140001, batch_size=32, sample_interval=200, g_weight=10, d_weight=1, u_weight=20, train_loss=3)
